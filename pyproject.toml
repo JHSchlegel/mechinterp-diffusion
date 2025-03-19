@@ -1,0 +1,112 @@
+# --------------------------------------------------------------------------- #
+#                                BUILD SYSTEM                                 #
+# --------------------------------------------------------------------------- #
+
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = [
+    "setuptools >=64.0.0",
+    "wheel >=0.40.0",
+]
+
+
+# --------------------------------------------------------------------------- #
+#                           PROJECT AND DEPENDENCIES                          #
+# --------------------------------------------------------------------------- #
+
+[project]
+name = "mechinterp-diffusion"
+version = "0.0.1"
+description = "mechinterp-diffusion: towards understanding text-to-image diffusion models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT License"}
+authors = [{name = "Jan Schlegel", email = "jschlegel@student.ethz.ch"}]
+keywords = ["diffusion models", "deep learning", "mechanistic interpretability"]
+dependencies = [
+    "diffusers==0.29.2",
+    "gradio==4.44.1",
+    "torch>=2.4.0",
+    "numpy",
+    "matplotlib",
+    "pillow",
+    "wandb",
+    "einops",
+    "transformers",
+    "accelerate",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black==25.1.0",
+    "isort==6.0.1",
+    "mypy==1.15.0",
+    "ruff==0.11.0",
+    "types-PyYAML",
+    "coverage",
+    "pytest",
+    "pytest-cov",
+    "pre-commit",
+]
+
+
+
+[project.urls]
+Homepage = "https://github.com/jhschlegel/mechinterp-diffusion"
+Issues = "https://github.com/jhschlegel/mechinterp-diffusion/issues"
+
+
+# --------------------------------------------------------------------------- #
+#                          TOOL CONFIGURATION                                 #
+# --------------------------------------------------------------------------- #
+
+[tool.black]
+line-length = 79
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_unused_configs = true
+warn_return_any = true
+warn_redundant_casts = true
+warn_unreachable = false
+ignore_missing_imports = true
+disallow_untyped_calls = true
+no_implicit_optional = true
+disallow_untyped_defs = true
+
+[tool.pyright]
+pythonVersion = "3.10"
+reportPrivateImportUsage = "none"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+testpaths = [
+    "tests",
+]
+markers = [  # deselect tests with -m "not <marker>"
+    "slow: unit tests that are slow",
+]
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle rules
+    "F",  # Pyflakes rules
+    "B",  # flake8-bugbear rules
+]
+
+
+[tool.setuptools]
+packages = ["mechinterp_diffusion"]
+package-dir = {"" = "src"}
