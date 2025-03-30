@@ -4,7 +4,7 @@ Hooked Diffusion Pipeline for Stable Diffusion XL
 Wrapper class for diffusion model pipelines enabling hooks and caching of
 intermediate representations for further analysis.
 
-Source: 
+Source/ copied from: 
 https://github.com/cywinski/SAeUron/blob/main/SAE/hooked_sd_noised_pipeline.py
 
 Changes made to original code:
