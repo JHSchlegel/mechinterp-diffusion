@@ -1,11 +1,10 @@
-
 """
 Hooked DDIM Noise Scheduler
 
 Wrapper class for diffusion model DDIMScheduler that allows hook registration
 before and after the scheduler step.
 
-Source/ copied from: 
+Source/ copied from:
 https://github.com/cywinski/SAeUron/blob/main/SAE/hooked_scheduler.py
 
 Changes made to original code:
@@ -16,6 +15,7 @@ Changes made to original code:
 #                           Packages and Presets                              #
 # =========================================================================== #
 from diffusers import DDIMScheduler
+
 
 # =========================================================================== #
 #                          Hooked Noise Scheduler                             #

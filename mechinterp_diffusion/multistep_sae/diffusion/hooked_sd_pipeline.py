@@ -4,16 +4,14 @@ Hooked Diffusion Pipeline for Stable Diffusion XL
 Wrapper class for diffusion model pipelines enabling hooks and caching of
 intermediate representations for further analysis.
 
-Source/ copied from: 
+Source/ copied from:
 https://github.com/cywinski/SAeUron/blob/main/SAE/hooked_sd_noised_pipeline.py
 
 Changes made to original code:
  - created HookedStableDiffusionXLPipeline class to work with SDXL Pipeline
  - comments to structure code
+ - automatic formatting and ruff conformance
 """
-
-
-
 
 # =========================================================================== #
 #                           Packages and Presets                              #
@@ -52,7 +50,6 @@ def retrieve(io, unconditional: bool = False):
         raise ValueError("Input/Output must be a tensor, or 1-element tuple")
 
 
-
 # =========================================================================== #
 #                    Hooked Diffusion Pipeline Class                     #
 # =========================================================================== #
@@ -79,10 +76,12 @@ class HookedDiffusionAbstractPipeline:
         position_hook_dict: Dict[str, Union[Callable, List[Callable]]],
         prompt: Union[str, List[str]] = None,
         num_images_per_prompt: Optional[int] = 1,
-        device: torch.device = torch.device("cuda"),
+        device: torch.device = torch.device("cuda"),  # noqa: B008
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        generator: Optional[
+            Union[torch.Generator, List[torch.Generator]]
+        ] = None,
         latents: Optional[torch.Tensor] = None,
         output_type: Optional[str] = "pil",
         **kwargs,
@@ -94,9 +93,12 @@ class HookedDiffusionAbstractPipeline:
         Args:
             *args: Arguments to pass to the pipeline.
             position_hook_dict: A dictionary mapping positions to hooks.
-                The keys are positions in the pipeline where the hooks should be registered.
-                The values are either a single hook or a list of hooks to be registered at the specified position.
-                Each hook should be a callable that takes three arguments: (module, input, output).
+                The keys are positions in the pipeline where the hooks should
+                    be registered.
+                The values are either a single hook or a list of hooks to be
+                    registered at the specified position.
+                Each hook should be a callable that takes three arguments:
+                    (module, input, output).
             **kwargs: Keyword arguments to pass to the pipeline.
         """
         hooks = []
@@ -110,16 +112,20 @@ class HookedDiffusionAbstractPipeline:
         hooks = [hook for hook in hooks if hook is not None]
 
         try:
-            prompt_embeds, timesteps, latents, extra_step_kwargs, added_cond_kwargs = (
-                self._prepare_prompt(
-                    prompt,
-                    device,
-                    num_images_per_prompt,
-                    guidance_scale,
-                    num_inference_steps,
-                    generator,
-                    latents,
-                )
+            (
+                prompt_embeds,
+                timesteps,
+                latents,
+                extra_step_kwargs,
+                added_cond_kwargs,
+            ) = self._prepare_prompt(
+                prompt,
+                device,
+                num_images_per_prompt,
+                guidance_scale,
+                num_inference_steps,
+                generator,
+                latents,
             )
 
             latents = self._denoise_loop(
@@ -146,10 +152,12 @@ class HookedDiffusionAbstractPipeline:
         *args,
         prompt: Union[str, List[str]] = None,
         num_images_per_prompt: Optional[int] = 1,
-        device: torch.device = torch.device("cuda"),
+        device: torch.device = torch.device("cuda"),  # noqa: B008
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        generator: Optional[
+            Union[torch.Generator, List[torch.Generator]]
+        ] = None,
         latents: Optional[torch.Tensor] = None,
         positions_to_cache: List[str],
         output_type: Optional[str] = "pil",
@@ -161,24 +169,26 @@ class HookedDiffusionAbstractPipeline:
         """
         Run the pipeline with caching at specified positions.
 
-        This method allows you to cache the intermediate inputs and/or outputs of the pipeline
-        at certain positions. The final output of the pipeline and a dictionary of cached values
-        are returned.
+        This method allows you to cache the intermediate inputs and/or outputs
+        of the pipeline at certain positions. The final output of the pipeline
+        and a dictionary of cached values are returned.
 
         Args:
             *args: Arguments to pass to the pipeline.
-            positions_to_cache (List[str]): A list of positions in the pipeline where intermediate
-                inputs/outputs should be cached.
-            save_input (bool, optional): If True, caches the input at each specified position.
-                Defaults to False.
-            save_output (bool, optional): If True, caches the output at each specified position.
-                Defaults to True.
+            positions_to_cache (List[str]): A list of positions in the pipeline
+                where intermediate inputs/outputs should be cached.
+            save_input (bool, optional): If True, caches the input at each
+                specified position. Defaults to False.
+            save_output (bool, optional): If True, caches the output at each
+                specified position. Defaults to True.
             **kwargs: Keyword arguments to pass to the pipeline.
 
         Returns:
             final_output: The final output of the pipeline after execution.
-            cache_dict (Dict[str, Dict[str, Any]]): A dictionary where keys are the specified positions
-                and values are dictionaries containing the cached 'input' and/or 'output' at each position,
+            cache_dict (Dict[str, Dict[str, Any]]): A dictionary where keys are
+                the specified positions
+                and values are dictionaries containing the cached 'input'
+                    and/or 'output' at each position,
                 depending on the flags `save_input` and `save_output`.
         """
         cache_input, cache_output = (
@@ -193,16 +203,20 @@ class HookedDiffusionAbstractPipeline:
         ]
         hooks = [hook for hook in hooks if hook is not None]
 
-        prompt_embeds, timesteps, latents, extra_step_kwargs, added_cond_kwargs = (
-            self._prepare_prompt(
-                prompt,
-                device,
-                num_images_per_prompt,
-                guidance_scale,
-                num_inference_steps,
-                generator,
-                latents,
-            )
+        (
+            prompt_embeds,
+            timesteps,
+            latents,
+            extra_step_kwargs,
+            added_cond_kwargs,
+        ) = self._prepare_prompt(
+            prompt,
+            device,
+            num_images_per_prompt,
+            guidance_scale,
+            num_inference_steps,
+            generator,
+            latents,
         )
 
         latents = self._denoise_loop(
@@ -241,10 +255,12 @@ class HookedDiffusionAbstractPipeline:
         *args,
         prompt: Union[str, List[str]] = None,
         num_images_per_prompt: Optional[int] = 1,
-        device: torch.device = torch.device("cuda"),
+        device: torch.device = torch.device("cuda"),  # noqa: B008
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        generator: Optional[
+            Union[torch.Generator, List[torch.Generator]]
+        ] = None,
         latents: Optional[torch.Tensor] = None,
         positions_to_cache: List[str],
         output_type: Optional[str] = "pil",
@@ -253,26 +269,29 @@ class HookedDiffusionAbstractPipeline:
         **kwargs,
     ):
         """
-        Run the pipeline with caching at specified positions saving intermediate predictions of x_0 after every timestep.
+        Run the pipeline with caching at specified positions saving
+            intermediate predictions of x_0 after every timestep.
 
-        This method allows you to cache the intermediate inputs and/or outputs of the pipeline
-        at certain positions. The final output of the pipeline and a dictionary of cached values
-        are returned.
+        This method allows you to cache the intermediate inputs and/or outputs
+            of the pipelinecat certain positions. The final output of the
+            pipeline and a dictionary of cached values are returned.
 
         Args:
             *args: Arguments to pass to the pipeline.
-            positions_to_cache (List[str]): A list of positions in the pipeline where intermediate
-                inputs/outputs should be cached.
-            save_input (bool, optional): If True, caches the input at each specified position.
-                Defaults to False.
-            save_output (bool, optional): If True, caches the output at each specified position.
+            positions_to_cache (List[str]): A list of positions in the pipeline
+                where intermediate inputs/outputs should be cached.
+            save_input (bool, optional): If True, caches the input at each
+                specified position. Defaults to False.
+            save_output (bool, optional): If True, caches the output at each
+                specified position.
                 Defaults to True.
             **kwargs: Keyword arguments to pass to the pipeline.
 
         Returns:
             output: x_0 predicted after each timestep.
-            cache_dict (Dict[str, Dict[str, Any]]): A dictionary where keys are the specified positions
-                and values are dictionaries containing the cached 'input' and/or 'output' at each position,
+            cache_dict (Dict[str, Dict[str, Any]]): A dictionary where keys
+                are the specified positions and values are dictionaries
+                containing the cached 'input' and/or 'output' at each position,
                 depending on the flags `save_input` and `save_output`.
         """
 
@@ -337,11 +356,8 @@ class HookedDiffusionAbstractPipeline:
         hooks = [hook for hook in hooks if hook is not None]
 
         # Denoising loop
-        num_warmup_steps = (
-            len(timesteps) - num_inference_steps * self.pipe.scheduler.order
-        )
         self._num_timesteps = len(timesteps)
-        for i, t in enumerate(timesteps):
+        for _, t in enumerate(timesteps):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = (
                 torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
@@ -416,10 +432,12 @@ class HookedDiffusionAbstractPipeline:
         )
         if len(all_intermediate_latents) > 0:
             for i in range(len(all_intermediate_latents)):
-                all_intermediate_latents[i] = self.pipe.image_processor.postprocess(
-                    all_intermediate_latents[i],
-                    output_type=output_type,
-                    do_denormalize=do_denormalize,
+                all_intermediate_latents[i] = (
+                    self.pipe.image_processor.postprocess(
+                        all_intermediate_latents[i],
+                        output_type=output_type,
+                        do_denormalize=do_denormalize,
+                    )
                 )
 
         if output_type == "latent":
@@ -431,7 +449,7 @@ class HookedDiffusionAbstractPipeline:
         self,
         *args,
         position_hook_dict: Dict[str, Union[Callable, List[Callable]]],
-        positions_to_cache: List[str] = [],
+        positions_to_cache: Optional[List[str]] = None,
         save_input: bool = False,
         save_output: bool = True,
         **kwargs,
@@ -439,31 +457,38 @@ class HookedDiffusionAbstractPipeline:
         """
         Run the pipeline with hooks and caching at specified positions.
 
-        This method allows you to register hooks at certain positions in the pipeline and
-        cache intermediate inputs and/or outputs at specified positions. Hooks can be used
-        for inspecting or modifying the pipeline's execution, and caching stores intermediate
-        values for later inspection or use.
+        This method allows you to register hooks at certain positions in the
+        pipeline and cache intermediate inputs and/or outputs at specified
+        positions. Hooks can be used for inspecting or modifying the pipeline's
+        execution, and caching stores intermediate values for later inspection
+        or use.
 
         Args:
             *args: Arguments to pass to the pipeline.
             position_hook_dict Dict[str, Union[Callable, List[Callable]]]:
-                A dictionary where the keys are the positions in the pipeline, and the values
-                are hooks (either a single hook or a list of hooks) to be registered at those positions.
-                Each hook should be a callable that accepts three arguments: (module, input, output).
-            positions_to_cache (List[str], optional): A list of positions in the pipeline where
-                intermediate inputs/outputs should be cached. Defaults to an empty list.
-            save_input (bool, optional): If True, caches the input at each specified position.
-                Defaults to False.
-            save_output (bool, optional): If True, caches the output at each specified position.
-                Defaults to True.
+                A dictionary where the keys are the positions in the pipeline,
+                and the values are hooks (either a single hook or a list of
+                hooks) to be registered at those positions.
+                Each hook should be a callable that accepts three arguments:
+                (module, input, output).
+            positions_to_cache (List[str], optional): A list of positions in
+                the pipeline where intermediate inputs/outputs should be
+                cached. Defaults to an empty list.
+            save_input (bool, optional): If True, caches the input at each
+                specified position. Defaults to False.
+            save_output (bool, optional): If True, caches the output at each
+                specified position. Defaults to True.
             **kwargs: Additional keyword arguments to pass to the pipeline.
 
         Returns:
             final_output: The final output of the pipeline after execution.
-            cache_dict (Dict[str, Dict[str, Any]]): A dictionary where keys are the specified positions
-                and values are dictionaries containing the cached 'input' and/or 'output' at each position,
+            cache_dict (Dict[str, Dict[str, Any]]): A dictionary where keys
+                are the specified positions and values are dictionaries
+                containing the cached 'input' and/or 'output' at each position,
                 depending on the flags `save_input` and `save_output`.
         """
+        if positions_to_cache is None:
+            positions_to_cache = []
         cache_input, cache_output = (
             dict() if save_input else None,
             dict() if save_output else None,
@@ -546,19 +571,24 @@ class HookedDiffusionAbstractPipeline:
 
         return block.register_forward_hook(hook, with_kwargs=True)
 
-
     def _register_general_hook(self, position, hook):
         if position == "scheduler_pre":
             if not self.use_hooked_scheduler:
                 raise ValueError(
-                    "Cannot register hooks on scheduler without using hooked scheduler"
+                    """
+                    Cannot register hooks on scheduler without using hooked
+                    scheduler
+                    """
                 )
             self.pipe.scheduler.pre_hooks.append(hook)
             return
         elif position == "scheduler_post":
             if not self.use_hooked_scheduler:
                 raise ValueError(
-                    "Cannot register hooks on scheduler without using hooked scheduler"
+                    """
+                    Cannot register hooks on scheduler without using hooked
+                    scheduler
+                    """
                 )
             self.pipe.scheduler.post_hooks.append(hook)
             return
@@ -622,7 +652,13 @@ class HookedDiffusionAbstractPipeline:
 
         extra_step_kwargs = self.pipe.prepare_extra_step_kwargs(generator, 0.0)
         added_cond_kwargs = None
-        return prompt_embeds, timesteps, latents, extra_step_kwargs, added_cond_kwargs
+        return (
+            prompt_embeds,
+            timesteps,
+            latents,
+            extra_step_kwargs,
+            added_cond_kwargs,
+        )
 
     def _denoise_loop(
         self,
@@ -634,7 +670,7 @@ class HookedDiffusionAbstractPipeline:
         prompt_embeds,
     ):
         self._num_timesteps = len(timesteps)
-        for i, t in enumerate(timesteps):
+        for _, t in enumerate(timesteps):
             # expand the latents if we are doing classifier free guidance
             latent_model_input = (
                 torch.cat([latents] * 2) if guidance_scale > 1.0 else latents

@@ -109,4 +109,3 @@ select = [
 
 [tool.setuptools]
 packages = ["mechinterp_diffusion"]
-package-dir = {"" = "src"}
