@@ -14,7 +14,6 @@ from typing import List, Optional, Union
 # =========================================================================== #
 #                            Packages and Presets                             #
 # =========================================================================== #
-import torch
 from simple_parsing import Serializable
 
 # TODO: implement train and test split logic
@@ -61,11 +60,10 @@ class LatentsExtractionConfig(Serializable):
     Name of huggingface model to use for extracting the latent activations.
     """
 
-    device: Union[torch.device, str] = "cuda"
-    """Device to use for extracting the latent activations."""
-
-    dtype: torch.dtype = torch.float16
-    """Data type to use for extracting the latent activations."""
+    dtype: str = "float16"
+    """Data type to use for extracting the latent activations. One of
+    ['float16', 'float32']
+    """
 
     num_inference_steps: int = 50
     """Number of diffusion inference steps during latents extraction."""
@@ -96,7 +94,7 @@ class LatentsExtractionConfig(Serializable):
 
         if self.extracted_latents_path is None:
             self.extracted_latents_path = os.path.join(
-                "activations",
+                "../../../activations",
                 self.model_name.split("/")[-1],
                 self.dataset_name.split("/")[-1],
                 self.dataset_split,
