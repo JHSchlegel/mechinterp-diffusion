@@ -1,3 +1,20 @@
+"""
+Script to cache activations from a pretrained Stable Diffusion model
+and save them to disk.
+
+Source:
+https://github.com/cywinski/SAeUron/blob/main/SAE/cache_activations_runner_unlearn_canvas.py
+
+Changes made to original code:
+ - typing hints, docstrings, comments, and formatting according to black
+ - rewrote script to combine class and main function into one script
+ - adapted to work with the new config and dataset structure
+ - removed the push_to_hub functionality and adjusted the dataset loading
+"""
+
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
 import json
 import os
 import shutil
@@ -30,28 +47,59 @@ TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
 # TODO: Handle train-test split
 # TODO: Add proper logging
+# TODO: debug tqdm caching activations
 
 
+# =========================================================================== #
+#                    Main Function for Latents Extraction                     #
+# =========================================================================== #
 def main() -> None:
+    """
+    Main function to extract latent activations from a pretrained Stable
+    Diffusion model. Allows the file to be run as a standalone script that
+    extracts activations from a pretrained model and saves them to disk.
+    """
+    # -------------------------------------------------------------------------
+    # Parse command line arguments and run the latents extraction script
+    # -------------------------------------------------------------------------
+    # log time:
+    import time
+
+    start_time = time.time()
     cfg = parse(LatentsExtractionConfig)
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
 
+    # save config to json
     if runner.accelerator.is_main_process:
         print(f"Successfully cached activations from {len(datasets)} hooks")
         print(f"Saved to {cfg.extracted_latents_path}")
 
-        # Save the configuration
         config_path = os.path.join(
             str(cfg.extracted_latents_path), "activations_config.json"
         )
         with open(config_path, "w") as f:
             json.dump(asdict(cfg), f, indent=2)
         print(f"Configuration saved to {config_path}")
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time:.2f} seconds")
 
 
+# =========================================================================== #
+#                      Class to Cache Latent Activations                      #
+# =========================================================================== #
 class CacheActivationsRunner:
-    def __init__(self, cfg: LatentsExtractionConfig):
+    """
+    Class to extract latent activations from a pretrained Stable Diffusion
+    model
+    """
+
+    def __init__(self, cfg: LatentsExtractionConfig) -> None:
+        """
+
+        Args:
+            cfg (LatentsExtractionConfig): _description_
+        """
         self.cfg = cfg
         self.accelerator = Accelerator()
 
@@ -59,14 +107,30 @@ class CacheActivationsRunner:
         # loading activations from disk
         if self.cfg.hook_names is not None:
             from diffusion.hooked_sd_pipeline import (
+                HookedStableDiffusionPipeline,
                 HookedStableDiffusionXLPipeline,
             )
 
-            self.pipe = HookedStableDiffusionXLPipeline.from_pretrained(
-                self.cfg.model_name,
-                torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
-                safety_checker=None,
-            )
+            if (
+                self.cfg.model_name
+                == "stabilityai/stable-diffusion-xl-base-1.0"
+            ):
+                self.pipe = HookedStableDiffusionXLPipeline.from_pretrained(
+                    self.cfg.model_name,
+                    torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
+                    safety_checker=None,
+                )
+            else:
+                try:
+                    self.pipe = HookedStableDiffusionPipeline.from_pretrained(
+                        self.cfg.model_name,
+                        torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
+                        safety_checker=None,
+                    )
+                except Exception as e:
+                    print(f"Error loading model {self.cfg.model_name}: {e}")
+                    raise e
+
             if is_xformers_available():
                 print("Enabling xFormers memory efficient attention")
                 self.pipe.unet.enable_xformers_memory_efficient_attention()
@@ -95,7 +159,12 @@ class CacheActivationsRunner:
             )
             self.n_buffers = len(self.dataloader)
 
-    def _load_prompt_dataset(self):
+    def _load_prompt_dataset(self) -> None:
+        """
+        Load the prompt dataset from disk, shuffle it, and select a subset of
+        the dataset size specified in the config.
+        """
+
         assert self.cfg.dataset_name in [
             "laion",
             "flickr30k",
@@ -118,6 +187,7 @@ class CacheActivationsRunner:
             df["caption"] = df["caption"].astype(str)
 
             self.dataset = Dataset.from_dict({"caption": df["caption"]})
+
         else:
             raise NotImplementedError(
                 f"Dataset {self.cfg.dataset_name} is not implemented yet"
@@ -126,6 +196,8 @@ class CacheActivationsRunner:
         self.dataset = self.dataset.shuffle(seed=self.cfg.seed)
         if self.cfg.dataset_size:
             self.dataset = self.dataset.select(range(self.cfg.dataset_size))
+
+        del df
 
     @staticmethod
     def get_batches(items, batch_size):
