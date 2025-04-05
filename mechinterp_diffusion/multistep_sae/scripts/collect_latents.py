@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
+from icecream import ic
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import torch
@@ -14,7 +15,7 @@ from accelerate.utils import gather_object
 from config import LatentsExtractionConfig
 from datasets import Array2D, Dataset, Features, Value
 from datasets.fingerprint import generate_fingerprint
-from icecream import ic
+from diffusers.utils import is_xformers_available
 from simple_parsing import parse
 from tqdm import tqdm
 
@@ -24,13 +25,14 @@ torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.epilogue_fusion = False
 torch._inductor.config.coordinate_descent_check_all_directions = True
 
-TORCH_STRING_DTYPE_MAP = {torch.float16: "float16", torch.float32: "float32"}
+TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
 
 # TODO: Handle train-test split
+# TODO: Add proper logging
 
 
-def main():
+def main() -> None:
     cfg = parse(LatentsExtractionConfig)
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
@@ -40,7 +42,9 @@ def main():
         print(f"Saved to {cfg.extracted_latents_path}")
 
         # Save the configuration
-        config_path = os.path.join(cfg.extracted_latents_path, "config.json")
+        config_path = os.path.join(
+            str(cfg.extracted_latents_path), "activations_config.json"
+        )
         with open(config_path, "w") as f:
             json.dump(asdict(cfg), f, indent=2)
         print(f"Configuration saved to {config_path}")
@@ -50,7 +54,6 @@ class CacheActivationsRunner:
     def __init__(self, cfg: LatentsExtractionConfig):
         self.cfg = cfg
         self.accelerator = Accelerator()
-        ic(self.accelerator.device)
 
         # hacky way to prevent initializing those objects when
         # loading activations from disk
@@ -61,16 +64,14 @@ class CacheActivationsRunner:
 
             self.pipe = HookedStableDiffusionXLPipeline.from_pretrained(
                 self.cfg.model_name,
-                torch_dtype=self.cfg.dtype,
+                torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
                 safety_checker=None,
             )
-            # if is_xformers_available():
-            #     print("Enabling xFormers memory efficient attention")
-            #     self.pipe.unet.enable_xformers_memory_efficient_attention()
+            if is_xformers_available():
+                print("Enabling xFormers memory efficient attention")
+                self.pipe.unet.enable_xformers_memory_efficient_attention()
 
             self.pipe.to(self.accelerator.device)
-            # self.pipe.text_encoder.to(self.accelerator.device)
-            # self.pipe.text_encoder_2.to(self.accelerator.device)
             self.pipe.vae.to("cpu")
             self.pipe.set_progress_bar_config(disable=True)
 
@@ -113,10 +114,7 @@ class CacheActivationsRunner:
 
             df = pd.read_csv(csv_path)
 
-            # Check for and handle any NaN or non-string values
-            df = df.dropna(subset=["caption"])  # Drop rows with NaN in caption
-
-            # Ensure all values are strings
+            df = df.dropna(subset=["caption"])
             df["caption"] = df["caption"].astype(str)
 
             self.dataset = Dataset.from_dict({"caption": df["caption"]})
@@ -230,8 +228,8 @@ class CacheActivationsRunner:
 
             for data_file in state["_data_files"]:
                 src = shard_dir / data_file["filename"]
-                new_name = f"""data-{file_count:05d}-of-\
-                    {len(list(source_dir.iterdir())):05d}.arrow"""
+                shard_count = len(list(source_dir.iterdir()))
+                new_name = f"data-{file_count:05d}-of-{shard_count:05d}.arrow"
                 dst = output_dir / new_name
                 transfer_fn(src, dst)
                 arrow_files.append({"filename": new_name})
@@ -278,11 +276,11 @@ class CacheActivationsRunner:
         batch_size, n_steps, d_sample_size, d_in = buffer.shape
 
         # Filter buffer based on every N steps
-        buffer = buffer[:, :: self.cfg.cache_every_n_timesteps, :, :]
+        buffer = buffer[:, :: self.cfg.extract_every_n_timesteps, :, :]
 
         activations = buffer.reshape(-1, d_sample_size, d_in)
         timesteps = self.scheduler_timesteps[
-            :: self.cfg.cache_every_n_timesteps
+            :: self.cfg.extract_every_n_timesteps
         ].repeat(batch_size)
 
         shard = Dataset.from_dict(
@@ -302,7 +300,7 @@ class CacheActivationsRunner:
                         d_in,
                         d_out,
                     ),
-                    dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
+                    dtype=self.cfg.dtype,
                 ),
                 "timestep": Value(dtype="uint16"),
             }
@@ -350,7 +348,6 @@ class CacheActivationsRunner:
             with self.accelerator.split_between_processes(batch) as prompt:
                 prompt = prompt[self.cfg.column_name]
 
-                # Ensure pipeline components are on same device
                 ic(f"UNet device: {next(self.pipe.unet.parameters()).device}")
 
                 _, acts_cache = self.pipe.run_with_cache(
@@ -400,16 +397,18 @@ class CacheActivationsRunner:
                     print(f"{hook_name=} {gathered_buffer_acts.shape=}")
 
                     shard = self._create_shard(gathered_buffer_acts, hook_name)
-
+                    shard_path = os.path.join(
+                        tmp_cached_activation_paths[hook_name],
+                        f"shard_{i:05d}",
+                    )
                     shard.save_to_disk(
-                        f"""{tmp_cached_activation_paths[hook_name]}\
-                            /shard_{i:05d}""",
+                        shard_path,
                         num_shards=1,
                     )
                     del gathered_buffer_acts, shard
                 del gathered_buffer
 
-        ### Concat sharded datasets together, shuffle and push to hub
+        ### Concat sharded datasets together and shuffle
         datasets = {}
 
         if self.accelerator.is_main_process:
