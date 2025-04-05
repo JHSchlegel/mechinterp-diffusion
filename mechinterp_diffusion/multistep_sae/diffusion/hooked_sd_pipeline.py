@@ -617,12 +617,12 @@ class HookedDiffusionAbstractPipeline:
         elif prompt is not None and isinstance(prompt, list):
             batch_size = len(prompt)
 
-        prompt_embeds, negative_prompt_embeds = self.pipe.encode_prompt(
-            prompt,
-            device,
-            num_images_per_prompt,
-            guidance_scale > 1.0,
-            None,
+        prompt_embeds, negative_prompt_embeds, _, _ = self.pipe.encode_prompt(
+            prompt=prompt,
+            device=device,
+            num_images_per_prompt=num_images_per_prompt,
+            do_classifier_free_guidance=guidance_scale > 1.0,
+            negative_prompt=None,
             prompt_embeds=None,
             negative_prompt_embeds=None,
             lora_scale=None,
