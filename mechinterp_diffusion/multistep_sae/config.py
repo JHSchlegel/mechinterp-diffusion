@@ -19,11 +19,17 @@ from simple_parsing import Serializable
 # TODO: implement train and test split logic
 
 
+# =========================================================================== #
+#                           SAE Configuration                                 #
+# =========================================================================== #
 @dataclass
 class VanillaSAEConfig(Serializable):
     pass
 
 
+# =========================================================================== #
+#                          Latents Extraction Configuration                   #
+# =========================================================================== #
 @dataclass
 class LatentsExtractionConfig(Serializable):
     hook_names: Union[List[str], None] = "unet.up_blocks.0.attentions.1"
@@ -98,5 +104,5 @@ class LatentsExtractionConfig(Serializable):
                 self.model_name.split("/")[-1],
                 self.dataset_name.split("/")[-1],
                 self.dataset_split,
-                str(self.dataset_size),
+                f"subset_size-{str(self.dataset_size)}",
             )
