@@ -23,15 +23,17 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
-from icecream import ic
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import logging
+
 import torch
 from accelerate import Accelerator
 from accelerate.utils import gather_object
 from config import LatentsExtractionConfig
 from datasets import Array2D, Dataset, Features, Value
 from datasets.fingerprint import generate_fingerprint
+from diffusers import DDIMScheduler
 from diffusers.utils import is_xformers_available
 from simple_parsing import parse
 from tqdm import tqdm
@@ -46,8 +48,6 @@ TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
 
 # TODO: Handle train-test split
-# TODO: Add proper logging
-# TODO: debug tqdm caching activations
 
 
 # =========================================================================== #
@@ -66,6 +66,7 @@ def main() -> None:
     import time
 
     start_time = time.time()
+
     cfg = parse(LatentsExtractionConfig)
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
@@ -120,6 +121,7 @@ class CacheActivationsRunner:
                     torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
                     safety_checker=None,
                 )
+
             else:
                 try:
                     self.pipe = HookedStableDiffusionPipeline.from_pretrained(
@@ -130,6 +132,10 @@ class CacheActivationsRunner:
                 except Exception as e:
                     print(f"Error loading model {self.cfg.model_name}: {e}")
                     raise e
+
+            assert isinstance(
+                self.pipe.scheduler, DDIMScheduler
+            ), "Scheduler is not a DDIMScheduler."
 
             if is_xformers_available():
                 print("Enabling xFormers memory efficient attention")
@@ -405,11 +411,19 @@ class CacheActivationsRunner:
             for path in tmp_cached_activation_paths.values():
                 path.mkdir(exist_ok=False, parents=False)
 
+        # set up logging to output folder:
+        logging.basicConfig(
+            filename=os.path.join(
+                str(self.cfg.extracted_latents_path), "logging.log"
+            ),
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+        )
         self.accelerator.wait_for_everyone()
 
         ### Create temporary sharded datasets
         if self.accelerator.is_main_process:
-            print(f"Started caching {self.num_examples} activations")
+            logging.info(f"Started caching {self.num_examples} activations")
 
         for i, batch in tqdm(
             enumerate(self.dataloader),
@@ -419,8 +433,6 @@ class CacheActivationsRunner:
         ):
             with self.accelerator.split_between_processes(batch) as prompt:
                 prompt = prompt[self.cfg.column_name]
-
-                ic(f"UNet device: {next(self.pipe.unet.parameters()).device}")
 
                 _, acts_cache = self.pipe.run_with_cache(
                     prompt=prompt,
@@ -466,7 +478,7 @@ class CacheActivationsRunner:
                             gathered_buffer_acts.shape[-1],
                         )
 
-                    print(f"{hook_name=} {gathered_buffer_acts.shape=}")
+                    logging.info(f"{hook_name=} {gathered_buffer_acts.shape=}")
 
                     shard = self._create_shard(gathered_buffer_acts, hook_name)
                     shard_path = os.path.join(
@@ -480,7 +492,7 @@ class CacheActivationsRunner:
                     del gathered_buffer_acts, shard
                 del gathered_buffer
 
-        ### Concat sharded datasets together and shuffle
+        ## Concat sharded datasets together and shuffle
         datasets = {}
 
         if self.accelerator.is_main_process:
@@ -490,7 +502,7 @@ class CacheActivationsRunner:
                     final_cached_activation_paths[hook_name],
                     copy_files=False,
                 )
-                print(f"Consolidated the dataset for hook {hook_name}")
+                logging.info(f"Consolidated the dataset for hook {hook_name}")
 
         return datasets
 
