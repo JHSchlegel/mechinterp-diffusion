@@ -10,6 +10,7 @@ Changes made to original code:
  - rewrote script to combine class and main function into one script
  - adapted to work with the new config and dataset structure
  - removed the push_to_hub functionality and adjusted the dataset loading
+ - included extensive logging
 """
 
 # =========================================================================== #
@@ -26,9 +27,11 @@ import pandas as pd
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import logging
+import time
 
 import torch
 from accelerate import Accelerator
+from accelerate.logging import get_logger
 from accelerate.utils import gather_object
 from config import LatentsExtractionConfig
 from datasets import Array2D, Dataset, Features, Value
@@ -46,6 +49,8 @@ torch._inductor.config.coordinate_descent_check_all_directions = True
 
 TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
+# accelerate logging:
+logger = get_logger(__name__, log_level="INFO")
 
 # TODO: Handle train-test split
 
@@ -62,28 +67,60 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Parse command line arguments and run the latents extraction script
     # -------------------------------------------------------------------------
-    # log time:
-    import time
 
-    start_time = time.time()
-
+    run_start_time = time.time()
     cfg = parse(LatentsExtractionConfig)
+
+    log_level = logging.INFO
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=log_level,
+        handlers=[logging.StreamHandler(sys.stdout)],  # Initial console log
+    )
+
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
 
     # save config to json
     if runner.accelerator.is_main_process:
-        print(f"Successfully cached activations from {len(datasets)} hooks")
-        print(f"Saved to {cfg.extracted_latents_path}")
+        logger.info(
+            f"Successfully cached activations from {len(datasets)} hooks"
+        )
+        logger.info(
+            f"Saved datasets to subdirectories of {cfg.extracted_latents_path}"
+        )
 
         config_path = os.path.join(
             str(cfg.extracted_latents_path), "activations_config.json"
         )
         with open(config_path, "w") as f:
             json.dump(asdict(cfg), f, indent=2)
-        print(f"Configuration saved to {config_path}")
-    end_time = time.time()
-    print(f"Time taken: {end_time - start_time:.2f} seconds")
+        logger.info(f"Configuration saved to {config_path}")
+    run_end_time = time.time()
+    logger.info(
+        f"Activation caching run finished. Duration: "
+        f"{format_duration(run_end_time - run_start_time)}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Helper function for time formatting
+# -----------------------------------------------------------------------------
+def format_duration(seconds: float) -> str:
+    """Formats duration in seconds into HH:MM:SS format.
+
+    Args:
+        seconds (float): Duration in seconds.
+
+    Returns:
+        str: Duration formatted as HH:MM:SS.
+    """
+    total_int_seconds = int(seconds)
+    hours = total_int_seconds // 3600
+    minutes = (total_int_seconds % 3600) // 60
+    secs = total_int_seconds % 60
+    return f"{hours:02}:{minutes:02}:{secs:02} ({seconds:.2f} seconds)"
 
 
 # =========================================================================== #
@@ -103,6 +140,13 @@ class CacheActivationsRunner:
         """
         self.cfg = cfg
         self.accelerator = Accelerator()
+
+        logger.info(f"Configuration loaded: {asdict(cfg)}")
+        logger.info(
+            f"Accelerator state: device={self.accelerator.device}, "
+            f"is_main_process={self.accelerator.is_main_process}, "
+            f"num_processes={self.accelerator.num_processes}"
+        )
 
         # hacky way to prevent initializing those objects when
         # loading activations from disk
@@ -129,16 +173,22 @@ class CacheActivationsRunner:
                         torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
                         safety_checker=None,
                     )
+
                 except Exception as e:
-                    print(f"Error loading model {self.cfg.model_name}: {e}")
+                    logger.error(
+                        f"Error loading model {self.cfg.model_name}: {e}"
+                    )
                     raise e
+
+            logger.info(f"Loaded model {self.cfg.model_name}")
 
             assert isinstance(
                 self.pipe.scheduler, DDIMScheduler
             ), "Scheduler is not a DDIMScheduler."
+            logger.info("Scheduler type verified (DDIMScheduler)")
 
             if is_xformers_available():
-                print("Enabling xFormers memory efficient attention")
+                logger.info("Enabling xFormers memory efficient attention")
                 self.pipe.unet.enable_xformers_memory_efficient_attention()
 
             self.pipe.to(self.accelerator.device)
@@ -158,7 +208,13 @@ class CacheActivationsRunner:
             }
 
             self._load_prompt_dataset()
+
             self.num_examples = len(self.dataset)
+
+            logger.info(
+                f"Loaded {self.num_examples} prompts from dataset "
+                f"'{self.cfg.dataset_name}' split '{self.cfg.dataset_split}'."
+            )
 
             self.dataloader = self.get_batches(
                 self.dataset, self.cfg.batch_size
@@ -195,6 +251,9 @@ class CacheActivationsRunner:
             self.dataset = Dataset.from_dict({"caption": df["caption"]})
 
         else:
+            logger.error(
+                f"Dataset {self.cfg.dataset_name} is not implemented yet"
+            )
             raise NotImplementedError(
                 f"Dataset {self.cfg.dataset_name} is not implemented yet"
             )
@@ -444,6 +503,8 @@ class CacheActivationsRunner:
                     save_output=True,
                     positions_to_cache=self.cfg.hook_names,
                     guidance_scale=self.cfg.guidance_scale,
+                    height=self.cfg.height,
+                    width=self.cfg.width,
                 )
 
             self.accelerator.wait_for_everyone()
