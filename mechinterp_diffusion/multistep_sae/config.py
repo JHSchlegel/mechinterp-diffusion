@@ -8,7 +8,7 @@ Adaptations made:
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
 # =========================================================================== #
@@ -32,13 +32,15 @@ class VanillaSAEConfig(Serializable):
 # =========================================================================== #
 @dataclass
 class LatentsExtractionConfig(Serializable):
-    hook_names: Union[List[str], None] = "unet.up_blocks.0.attentions.1"
+    hook_names: Union[List[str], str, None] = field(
+        default_factory=lambda: ["unet.down_blocks.2.attentions.0"]
+    )
     """List of model layers from which to extract the activations."""
 
     extracted_latents_path: Union[str, None] = None
     """Where to save the extracted latent activations."""
 
-    dataset_name: str = "laion"
+    dataset_name: str = "flickr30k"
     """
     Name of huggingface prompt dataset to use for extracting the latent
     activations. Must be one of ['laion', 'flickr30k']. For 'laion', the
@@ -61,7 +63,7 @@ class LatentsExtractionConfig(Serializable):
     column_name: str = "caption"
     """Name of column in the dataset that includes the prompts."""
 
-    model_name: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    model_name: str = "stabilityai/stable-diffusion-2-1"
     """
     Name of huggingface model to use for extracting the latent activations.
     """
@@ -71,7 +73,7 @@ class LatentsExtractionConfig(Serializable):
     ['float16', 'float32']
     """
 
-    num_inference_steps: int = 50
+    num_inference_steps: int = 25
     """Number of diffusion inference steps during latents extraction."""
 
     seed: int = 42
@@ -86,8 +88,14 @@ class LatentsExtractionConfig(Serializable):
     process.
     """
 
-    guidance_scale: float = 0.0
+    guidance_scale: float = 7.5
     """Scale for classifier-free guidance during diffusion process."""
+
+    height: int = 512
+    """Height of the generated images."""
+
+    width: int = 512
+    """Width of the generated images."""
 
     output_or_diff: str = "diff"
     """

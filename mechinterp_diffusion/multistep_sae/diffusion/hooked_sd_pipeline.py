@@ -671,8 +671,15 @@ class HookedDiffusionAbstractPipeline:
     ):
         ## PREPARE PROMPT from StableDiffusionPipeline ##
         # 0. Default height and width to unet
-        height = self.pipe.unet.config.sample_size * self.pipe.vae_scale_factor
-        width = self.pipe.unet.config.sample_size * self.pipe.vae_scale_factor
+        default_height = (
+            self.pipe.unet.config.sample_size * self.pipe.vae_scale_factor
+        )
+        default_width = (
+            self.pipe.unet.config.sample_size * self.pipe.vae_scale_factor
+        )
+
+        height = kwargs.get("height", default_height)
+        width = kwargs.get("width", default_width)
 
         # 2. Define call parameters
         if prompt is not None and isinstance(prompt, str):
