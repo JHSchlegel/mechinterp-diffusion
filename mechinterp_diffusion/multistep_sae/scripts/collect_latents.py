@@ -23,8 +23,6 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-import pandas as pd
-
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import logging
 import time
@@ -34,7 +32,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import gather_object
 from config import LatentsExtractionConfig
-from datasets import Array2D, Dataset, Features, Value
+from datasets import Array2D, Dataset, DatasetDict, Features, Value
 from datasets.fingerprint import generate_fingerprint
 from diffusers import DDIMScheduler
 from diffusers.utils import is_xformers_available
@@ -52,8 +50,6 @@ TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 # accelerate logging:
 logger = get_logger(__name__, log_level="INFO")
 
-# TODO: Handle train-test split
-
 
 # =========================================================================== #
 #                    Main Function for Latents Extraction                     #
@@ -70,6 +66,12 @@ def main() -> None:
 
     run_start_time = time.time()
     cfg = parse(LatentsExtractionConfig)
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
 
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
@@ -230,17 +232,9 @@ class CacheActivationsRunner:
         ], "Only train and test splits are supported for now"
 
         if self.cfg.dataset_name == "flickr30k":
-            csv_path = os.path.join(
-                os.path.dirname(__file__),
-                "../../../flickr30k_sample/flickr30k_captions.csv",
-            )
-
-            df = pd.read_csv(csv_path)
-
-            df = df.dropna(subset=["caption"])
-            df["caption"] = df["caption"].astype(str)
-
-            self.dataset = Dataset.from_dict({"caption": df["caption"]})
+            self.dataset = DatasetDict.load_from_disk(
+                "../../../flickr30k_captions"
+            )[self.cfg.dataset_split]
 
         else:
             logger.error(
@@ -253,8 +247,6 @@ class CacheActivationsRunner:
         self.dataset = self.dataset.shuffle(seed=self.cfg.seed)
         if self.cfg.dataset_size:
             self.dataset = self.dataset.select(range(self.cfg.dataset_size))
-
-        del df
 
     @staticmethod
     def get_batches(items, batch_size):
