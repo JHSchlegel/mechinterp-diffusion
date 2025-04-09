@@ -71,14 +71,6 @@ def main() -> None:
     run_start_time = time.time()
     cfg = parse(LatentsExtractionConfig)
 
-    log_level = logging.INFO
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        level=log_level,
-        handlers=[logging.StreamHandler(sys.stdout)],  # Initial console log
-    )
-
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
 
@@ -470,14 +462,20 @@ class CacheActivationsRunner:
             for path in tmp_cached_activation_paths.values():
                 path.mkdir(exist_ok=False, parents=False)
 
-        # set up logging to output folder:
-        logging.basicConfig(
-            filename=os.path.join(
-                str(self.cfg.extracted_latents_path), "logging.log"
-            ),
-            level=logging.INFO,
-            format="%(asctime)s - %(levelname)s - %(message)s",
-        )
+            # set up logging to output folder:
+            log_file = os.path.join(
+                str(self.cfg.extracted_latents_path),
+                "activations_extraction.log",
+            )
+            logging.basicConfig(
+                format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+                level=logging.INFO,
+                handlers=[
+                    logging.StreamHandler(sys.stdout),
+                    logging.FileHandler(log_file),
+                ],
+            )
         self.accelerator.wait_for_everyone()
 
         ### Create temporary sharded datasets
