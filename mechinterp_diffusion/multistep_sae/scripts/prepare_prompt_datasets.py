@@ -2,15 +2,14 @@
 This script creates the prompt datasets for the multistep diffusion models.
 """
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
 import argparse
 import os
 import random
 
 import pandas as pd
-
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
 from datasets import Dataset, DatasetDict, load_dataset
 
 
