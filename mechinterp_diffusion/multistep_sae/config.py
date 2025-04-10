@@ -88,7 +88,7 @@ class LatentsExtractionConfig(Serializable):
     process.
     """
 
-    guidance_scale: float = 7.5
+    guidance_scale: float = 9.0
     """Scale for classifier-free guidance during diffusion process."""
 
     height: int = 512
@@ -102,6 +102,12 @@ class LatentsExtractionConfig(Serializable):
     Whether to also save the input or just the output latent representation
     """
 
+    unconditional: bool = False
+    """
+    Whether to extract unconditional latents or conditional latents whenever
+    guidance_scale > 1.0
+    """
+
     def __post_init__(self):
         if isinstance(self.hook_names, str):
             self.hook_names = [self.hook_names]
@@ -113,4 +119,6 @@ class LatentsExtractionConfig(Serializable):
                 self.dataset_name.split("/")[-1],
                 self.dataset_split,
                 f"subset_size-{str(self.dataset_size)}",
+                f"{self.num_inference_steps}-inference-steps",
+                f"every-{self.extract_every_n_timesteps}-steps",
             )
