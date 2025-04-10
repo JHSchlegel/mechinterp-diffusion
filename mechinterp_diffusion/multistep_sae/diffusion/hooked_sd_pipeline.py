@@ -38,24 +38,22 @@ from .hooked_scheduler import HookedNoiseScheduler
 # =========================================================================== #
 #                          Helper Functions                                   #
 # =========================================================================== #
-def retrieve(io, unconditional: bool = False):
+def retrieve(io, unconditional: bool = False, guidance_scale: float = 7.5):
     if isinstance(io, tuple):
         if len(io) == 1:
             io = io[0].detach().cpu()
-            io_uncond, io_cond = io.chunk(2)
-            if unconditional:
-                return io_uncond
-            return io_cond
         else:
             raise ValueError("A tuple should have length of 1")
     elif isinstance(io, torch.Tensor):
         io = io.detach().cpu()
+    else:
+        raise ValueError("Input/Output must be a tensor, or 1-element tuple")
+    if guidance_scale > 1.0:
         io_uncond, io_cond = io.chunk(2)
         if unconditional:
             return io_uncond
         return io_cond
-    else:
-        raise ValueError("Input/Output must be a tensor, or 1-element tuple")
+    return io
 
 
 # =========================================================================== #
@@ -219,7 +217,11 @@ class HookedDiffusionAbstractPipeline:
         )
         hooks = [
             self._register_cache_hook(
-                position, cache_input, cache_output, unconditional
+                position,
+                cache_input,
+                cache_output,
+                unconditional,
+                guidance_scale,
             )
             for position in positions_to_cache
         ]
@@ -280,6 +282,7 @@ class HookedDiffusionAbstractPipeline:
         prompt: Union[str, List[str]] = None,
         num_images_per_prompt: Optional[int] = 1,
         device: torch.device = torch.device("cuda"),  # noqa: B008
+        unconditional: bool = False,
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator: Optional[
@@ -351,7 +354,13 @@ class HookedDiffusionAbstractPipeline:
         )
         all_intermediate_latents = []
         hooks = [
-            self._register_cache_hook(position, cache_input, cache_output)
+            self._register_cache_hook(
+                position,
+                cache_input,
+                cache_output,
+                unconditional,
+                guidance_scale,
+            )
             for position in positions_to_cache
         ]
         hooks = [hook for hook in hooks if hook is not None]
@@ -390,7 +399,7 @@ class HookedDiffusionAbstractPipeline:
         timestep_cond = None
         if self.is_sdxl and self.unet.config.time_cond_proj_dim is not None:
             guidance_scale_tensor = torch.tensor(
-                self.guidance_scale - 1
+                self.pipe.guidance_scale - 1
             ).repeat(latents.shape[0])
             timestep_cond = self.get_guidance_scale_embedding(
                 guidance_scale_tensor,
@@ -501,6 +510,8 @@ class HookedDiffusionAbstractPipeline:
         *args,
         position_hook_dict: Dict[str, Union[Callable, List[Callable]]],
         positions_to_cache: Optional[List[str]] = None,
+        unconditional: bool = False,
+        guidance_scale: float = 7.5,
         save_input: bool = False,
         save_output: bool = True,
         **kwargs,
@@ -545,7 +556,13 @@ class HookedDiffusionAbstractPipeline:
             dict() if save_output else None,
         )
         hooks = [
-            self._register_cache_hook(position, cache_input, cache_output)
+            self._register_cache_hook(
+                position,
+                cache_input,
+                cache_output,
+                unconditional,
+                guidance_scale,
+            )
             for position in positions_to_cache
         ]
 
@@ -607,6 +624,7 @@ class HookedDiffusionAbstractPipeline:
         cache_input: Dict,
         cache_output: Dict,
         unconditional: bool = False,
+        guidance_scale: float = 7.5,
     ):
         block = self._locate_block(position)
 
@@ -614,7 +632,7 @@ class HookedDiffusionAbstractPipeline:
             if cache_input is not None:
                 if position not in cache_input:
                     cache_input[position] = []
-                input_to_cache = retrieve(input, unconditional)
+                input_to_cache = retrieve(input, unconditional, guidance_scale)
                 if len(input_to_cache.shape) == 4:
                     input_to_cache = input_to_cache.view(
                         input_to_cache.shape[0], input_to_cache.shape[1], -1
@@ -624,7 +642,9 @@ class HookedDiffusionAbstractPipeline:
             if cache_output is not None:
                 if position not in cache_output:
                     cache_output[position] = []
-                output_to_cache = retrieve(output, unconditional)
+                output_to_cache = retrieve(
+                    output, unconditional, guidance_scale
+                )
                 if len(output_to_cache.shape) == 4:
                     output_to_cache = output_to_cache.view(
                         output_to_cache.shape[0], output_to_cache.shape[1], -1
@@ -941,7 +961,7 @@ class HookedDiffusionAbstractPipeline:
         timestep_cond = None
         if self.is_sdxl and self.unet.config.time_cond_proj_dim is not None:
             guidance_scale_tensor = torch.tensor(
-                self.guidance_scale - 1
+                self.pipe.guidance_scale - 1
             ).repeat(latents.shape[0])
             timestep_cond = self.get_guidance_scale_embedding(
                 guidance_scale_tensor,
