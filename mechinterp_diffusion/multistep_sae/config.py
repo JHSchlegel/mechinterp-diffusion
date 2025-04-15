@@ -9,7 +9,7 @@ Adaptations made:
 
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 # =========================================================================== #
 #                            Packages and Presets                             #
@@ -23,8 +23,12 @@ from simple_parsing import Serializable
 #                           SAE Configuration                                 #
 # =========================================================================== #
 @dataclass
-class VanillaSAEConfig(Serializable):
-    pass
+class SAEConfig(Serializable):
+    architecture: Literal["topk", "jump_relu"] = "jump_relu"
+
+    dtype: str = "float32"
+
+    expansion_factor: int = 8
 
 
 # =========================================================================== #

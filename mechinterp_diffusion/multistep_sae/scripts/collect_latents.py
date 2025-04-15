@@ -480,6 +480,7 @@ class CacheActivationsRunner:
             total=self.n_buffers,
             disable=not self.accelerator.is_main_process,
         ):
+
             with self.accelerator.split_between_processes(batch) as prompt:
                 prompt = prompt[self.cfg.column_name]
 
@@ -495,6 +496,7 @@ class CacheActivationsRunner:
                     guidance_scale=self.cfg.guidance_scale,
                     height=self.cfg.height,
                     width=self.cfg.width,
+                    unconditional=self.cfg.unconditional,
                 )
 
             self.accelerator.wait_for_everyone()
@@ -511,6 +513,7 @@ class CacheActivationsRunner:
                     gathered_buffer[hook_name] = acts_cache["output"][
                         hook_name
                     ]
+
             gathered_buffer = gather_object([gathered_buffer])  # list of dicts
 
             if self.accelerator.is_main_process:
