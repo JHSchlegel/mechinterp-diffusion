@@ -91,7 +91,7 @@ class TestBaseSAE(unittest.TestCase):
         self.sae = SimpleSAE(self.cfg)
         self.sae._initialize_weights()
 
-    def test_initialization(self):
+    def test_initialization(self) -> None:
         """Test if the model initializes correctly"""
         self.assertEqual(self.sae.d_in, 128)
         self.assertEqual(self.sae.d_sae, 256)
@@ -104,7 +104,7 @@ class TestBaseSAE(unittest.TestCase):
         self.assertEqual(self.sae.pre_bias.shape, (128,))
         self.assertEqual(self.sae.latent_bias.shape, (256,))
 
-    def test_unit_norm_decoder(self):
+    def test_unit_norm_decoder(self) -> None:
         """
         Test if unit_norm_decoder_ correctly normalizes the decoder weights
         """
@@ -115,7 +115,7 @@ class TestBaseSAE(unittest.TestCase):
         for norm in norms:
             self.assertAlmostEqual(norm.item(), 1.0, places=6)
 
-    def test_device_and_dtype(self):
+    def test_device_and_dtype(self) -> None:
         """Test if the model correctly handles device and dtype changes."""
         # skip test if no cuda
         if not torch.cuda.is_available():
@@ -132,7 +132,7 @@ class TestBaseSAE(unittest.TestCase):
             self.assertEqual(param.device.type, "cuda")
             self.assertEqual(param.dtype, torch.float16)
 
-    def test_forward_pass(self):
+    def test_forward_pass(self) -> None:
         """Test the forward pass of the model."""
         # test inputs
         bs = 10
@@ -143,7 +143,7 @@ class TestBaseSAE(unittest.TestCase):
         self.assertEqual(x_hat.shape, (bs, self.sae.d_in))
         self.assertEqual(h.shape, (bs, self.sae.d_sae))
 
-    def test_save_and_load(self):
+    def test_save_and_load(self) -> None:
         """Test saving and loading model weights."""
         # temporary directory for testing
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -183,7 +183,7 @@ class TestBaseSAE(unittest.TestCase):
             self.assertEqual(loaded_sae.d_sae, self.sae.d_sae)
             self.assertEqual(loaded_sae.dtype, self.sae.dtype)
 
-    def test_nonexistent_load_path(self):
+    def test_nonexistent_load_path(self) -> None:
         """
         Test that loading from a nonexistent path raises file not found error
         """
