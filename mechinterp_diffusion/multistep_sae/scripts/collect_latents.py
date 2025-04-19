@@ -10,6 +10,7 @@ Changes made to original code:
  - rewrote script to combine class and main function into one script
  - adapted to work with the new config and dataset structure
  - removed the push_to_hub functionality and adjusted the dataset loading
+ - included extensive logging
 """
 
 # =========================================================================== #
@@ -22,16 +23,18 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-import pandas as pd
-from icecream import ic
-
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import logging
+import time
+
 import torch
 from accelerate import Accelerator
+from accelerate.logging import get_logger
 from accelerate.utils import gather_object
 from config import LatentsExtractionConfig
-from datasets import Array2D, Dataset, Features, Value
+from datasets import Array2D, Dataset, DatasetDict, Features, Value
 from datasets.fingerprint import generate_fingerprint
+from diffusers import DDIMScheduler
 from diffusers.utils import is_xformers_available
 from simple_parsing import parse
 from tqdm import tqdm
@@ -44,10 +47,8 @@ torch._inductor.config.coordinate_descent_check_all_directions = True
 
 TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
-
-# TODO: Handle train-test split
-# TODO: Add proper logging
-# TODO: debug tqdm caching activations
+# accelerate logging:
+logger = get_logger(__name__, log_level="INFO")
 
 
 # =========================================================================== #
@@ -62,27 +63,58 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Parse command line arguments and run the latents extraction script
     # -------------------------------------------------------------------------
-    # log time:
-    import time
 
-    start_time = time.time()
+    run_start_time = time.time()
     cfg = parse(LatentsExtractionConfig)
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
     runner = CacheActivationsRunner(cfg)
     datasets = runner.run()
 
     # save config to json
     if runner.accelerator.is_main_process:
-        print(f"Successfully cached activations from {len(datasets)} hooks")
-        print(f"Saved to {cfg.extracted_latents_path}")
+        logger.info(
+            f"Successfully cached activations from {len(datasets)} hooks"
+        )
+        logger.info(
+            f"Saved datasets to subdirectories of {cfg.extracted_latents_path}"
+        )
 
         config_path = os.path.join(
             str(cfg.extracted_latents_path), "activations_config.json"
         )
         with open(config_path, "w") as f:
             json.dump(asdict(cfg), f, indent=2)
-        print(f"Configuration saved to {config_path}")
-    end_time = time.time()
-    print(f"Time taken: {end_time - start_time:.2f} seconds")
+        logger.info(f"Configuration saved to {config_path}")
+    run_end_time = time.time()
+    logger.info(
+        f"Activation caching run finished. Duration: "
+        f"{format_duration(run_end_time - run_start_time)}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Helper function for time formatting
+# -----------------------------------------------------------------------------
+def format_duration(seconds: float) -> str:
+    """Formats duration in seconds into HH:MM:SS format.
+
+    Args:
+        seconds (float): Duration in seconds.
+
+    Returns:
+        str: Duration formatted as HH:MM:SS.
+    """
+    total_int_seconds = int(seconds)
+    hours = total_int_seconds // 3600
+    minutes = (total_int_seconds % 3600) // 60
+    secs = total_int_seconds % 60
+    return f"{hours:02}:{minutes:02}:{secs:02} ({seconds:.2f} seconds)"
 
 
 # =========================================================================== #
@@ -103,6 +135,13 @@ class CacheActivationsRunner:
         self.cfg = cfg
         self.accelerator = Accelerator()
 
+        logger.info(f"Configuration loaded: {asdict(cfg)}")
+        logger.info(
+            f"Accelerator state: device={self.accelerator.device}, "
+            f"is_main_process={self.accelerator.is_main_process}, "
+            f"num_processes={self.accelerator.num_processes}"
+        )
+
         # hacky way to prevent initializing those objects when
         # loading activations from disk
         if self.cfg.hook_names is not None:
@@ -120,6 +159,7 @@ class CacheActivationsRunner:
                     torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
                     safety_checker=None,
                 )
+
             else:
                 try:
                     self.pipe = HookedStableDiffusionPipeline.from_pretrained(
@@ -127,12 +167,22 @@ class CacheActivationsRunner:
                         torch_dtype=TORCH_STRING_DTYPE_MAP[self.cfg.dtype],
                         safety_checker=None,
                     )
+
                 except Exception as e:
-                    print(f"Error loading model {self.cfg.model_name}: {e}")
+                    logger.error(
+                        f"Error loading model {self.cfg.model_name}: {e}"
+                    )
                     raise e
 
+            logger.info(f"Loaded model {self.cfg.model_name}")
+
+            assert isinstance(
+                self.pipe.scheduler, DDIMScheduler
+            ), "Scheduler is not a DDIMScheduler."
+            logger.info("Scheduler type verified (DDIMScheduler)")
+
             if is_xformers_available():
-                print("Enabling xFormers memory efficient attention")
+                logger.info("Enabling xFormers memory efficient attention")
                 self.pipe.unet.enable_xformers_memory_efficient_attention()
 
             self.pipe.to(self.accelerator.device)
@@ -152,7 +202,13 @@ class CacheActivationsRunner:
             }
 
             self._load_prompt_dataset()
+
             self.num_examples = len(self.dataset)
+
+            logger.info(
+                f"Loaded {self.num_examples} prompts from dataset "
+                f"'{self.cfg.dataset_name}' split '{self.cfg.dataset_split}'."
+            )
 
             self.dataloader = self.get_batches(
                 self.dataset, self.cfg.batch_size
@@ -176,19 +232,14 @@ class CacheActivationsRunner:
         ], "Only train and test splits are supported for now"
 
         if self.cfg.dataset_name == "flickr30k":
-            csv_path = os.path.join(
-                os.path.dirname(__file__),
-                "../../../flickr30k_sample/flickr30k_captions.csv",
-            )
-
-            df = pd.read_csv(csv_path)
-
-            df = df.dropna(subset=["caption"])
-            df["caption"] = df["caption"].astype(str)
-
-            self.dataset = Dataset.from_dict({"caption": df["caption"]})
+            self.dataset = DatasetDict.load_from_disk(
+                "../../../flickr30k_captions"
+            )[self.cfg.dataset_split]
 
         else:
+            logger.error(
+                f"Dataset {self.cfg.dataset_name} is not implemented yet"
+            )
             raise NotImplementedError(
                 f"Dataset {self.cfg.dataset_name} is not implemented yet"
             )
@@ -196,8 +247,6 @@ class CacheActivationsRunner:
         self.dataset = self.dataset.shuffle(seed=self.cfg.seed)
         if self.cfg.dataset_size:
             self.dataset = self.dataset.select(range(self.cfg.dataset_size))
-
-        del df
 
     @staticmethod
     def get_batches(items, batch_size):
@@ -405,11 +454,25 @@ class CacheActivationsRunner:
             for path in tmp_cached_activation_paths.values():
                 path.mkdir(exist_ok=False, parents=False)
 
+            # set up logging to output folder:
+            log_file = os.path.join(
+                str(self.cfg.extracted_latents_path),
+                "activations_extraction.log",
+            )
+            logging.basicConfig(
+                format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+                level=logging.INFO,
+                handlers=[
+                    logging.StreamHandler(sys.stdout),
+                    logging.FileHandler(log_file),
+                ],
+            )
         self.accelerator.wait_for_everyone()
 
         ### Create temporary sharded datasets
         if self.accelerator.is_main_process:
-            print(f"Started caching {self.num_examples} activations")
+            logging.info(f"Started caching {self.num_examples} activations")
 
         for i, batch in tqdm(
             enumerate(self.dataloader),
@@ -417,10 +480,9 @@ class CacheActivationsRunner:
             total=self.n_buffers,
             disable=not self.accelerator.is_main_process,
         ):
+
             with self.accelerator.split_between_processes(batch) as prompt:
                 prompt = prompt[self.cfg.column_name]
-
-                ic(f"UNet device: {next(self.pipe.unet.parameters()).device}")
 
                 _, acts_cache = self.pipe.run_with_cache(
                     prompt=prompt,
@@ -432,6 +494,9 @@ class CacheActivationsRunner:
                     save_output=True,
                     positions_to_cache=self.cfg.hook_names,
                     guidance_scale=self.cfg.guidance_scale,
+                    height=self.cfg.height,
+                    width=self.cfg.width,
+                    unconditional=self.cfg.unconditional,
                 )
 
             self.accelerator.wait_for_everyone()
@@ -448,6 +513,7 @@ class CacheActivationsRunner:
                     gathered_buffer[hook_name] = acts_cache["output"][
                         hook_name
                     ]
+
             gathered_buffer = gather_object([gathered_buffer])  # list of dicts
 
             if self.accelerator.is_main_process:
@@ -466,7 +532,7 @@ class CacheActivationsRunner:
                             gathered_buffer_acts.shape[-1],
                         )
 
-                    print(f"{hook_name=} {gathered_buffer_acts.shape=}")
+                    logging.info(f"{hook_name=} {gathered_buffer_acts.shape=}")
 
                     shard = self._create_shard(gathered_buffer_acts, hook_name)
                     shard_path = os.path.join(
@@ -480,7 +546,7 @@ class CacheActivationsRunner:
                     del gathered_buffer_acts, shard
                 del gathered_buffer
 
-        ### Concat sharded datasets together and shuffle
+        ## Concat sharded datasets together and shuffle
         datasets = {}
 
         if self.accelerator.is_main_process:
@@ -490,7 +556,7 @@ class CacheActivationsRunner:
                     final_cached_activation_paths[hook_name],
                     copy_files=False,
                 )
-                print(f"Consolidated the dataset for hook {hook_name}")
+                logging.info(f"Consolidated the dataset for hook {hook_name}")
 
         return datasets
 

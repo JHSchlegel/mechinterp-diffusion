@@ -173,3 +173,5 @@ cython_debug/
 flickr30k*/
 *data*/
 activations/
+
+*misc.*
