@@ -7,28 +7,92 @@ Source/ adapted from:
 Adaptations made:
 """
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+
 import os
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Union
 
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
 from simple_parsing import Serializable
-
-# TODO: implement train and test split logic
 
 
 # =========================================================================== #
 #                           SAE Configuration                                 #
 # =========================================================================== #
 @dataclass
-class SAEConfig(Serializable):
-    architecture: Literal["topk", "jump_relu"] = "jump_relu"
+class BaseSAEConfig(Serializable):
+    dtype: Literal["float32", "float16"] = "float32"
+    """
+    Data type to use for the model weights. One of ['float16', 'float32']
+    """
 
-    dtype: str = "float32"
+    device: str = "cuda"
+    """
+    Device to use for the model weights.
+    """
 
-    expansion_factor: int = 8
+    d_in: int = 1_280
+    """
+    Number of input channels of the latent representations of the U-Net
+    cross-attention blocks.
+    """
+
+    d_sae: int = 5120
+    """
+    Number of columns of the decoder weight matrix i.e. the number of features.
+    """
+
+    def __post_init__(self):
+        if self.dtype not in ["float16", "float32"]:
+            raise ValueError(
+                f"Invalid dtype: {self.dtype}. Must be one of "
+                f"['float16', 'float32']"
+            )
+
+        if not isinstance(self.device, str):
+            raise ValueError(
+                f"Invalid device: {self.device}. Must be of type str."
+            )
+
+
+# -----------------------------------------------------------------------------
+# TopK
+# -----------------------------------------------------------------------------
+@dataclass
+class TopKSAEConfig(BaseSAEConfig):
+    architecture: Literal["topk", "batch_topk"] = "topk"
+    k: int = 10
+    """
+    Number of top-k activations to keep during the forward pass.
+    """
+
+    k_aux: int = 256
+    """
+    How many topk dead features to use for auxiliary loss term.
+    """
+
+    lambda_k_aux: float = 1 / 32
+    """
+    Weight for the auxiliary loss term in the top-k architecture.
+    """
+
+
+# -----------------------------------------------------------------------------
+# Jump ReLU
+# -----------------------------------------------------------------------------
+@dataclass
+class JumpReLUConfig(BaseSAEConfig):
+    pass
+
+
+# =========================================================================== #
+#                             Training Configuration                          #
+# =========================================================================== #
+@dataclass
+class TrainingConfig(Serializable):
+    sae: BaseSAEConfig
 
 
 # =========================================================================== #
