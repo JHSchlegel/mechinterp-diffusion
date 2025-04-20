@@ -44,6 +44,12 @@ class BaseSAEConfig(Serializable):
     Number of columns of the decoder weight matrix i.e. the number of features.
     """
 
+    standardize_input: bool = False
+    """
+    Whether to standardize input to zero mean and unit variance before
+    encoding. If True, also undo standardization after decoding.
+    """
+
     def __post_init__(self):
         if self.dtype not in ["float16", "float32"]:
             raise ValueError(
