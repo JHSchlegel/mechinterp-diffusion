@@ -5,7 +5,7 @@ This module implements the Base Sparse Autoencoder class.
 Inspired by concepts and implementations found in:
 -SAEBench: https://github.com/adamkarvonen/SAEBench/blob/main/sae_bench/custom_saes/base_sae.py
 -OpenAI SAE: https://github.com/openai/sparse_autoencoder/blob/main/sparse_autoencoder/model.py
--SAeUron: https://github.com/JHSchlegel/SAeUron/blob/main/SAE/sae.py
+-SAeUron: https://github.com/cywinski/SAeUron/blob/main/SAE/sae.py
 -SDXL-Unbox: https://github.com/surkovv/sdxl-unbox/blob/d5e383fea440aed59d533062f3d8f8435c9a3737/SAE/sae.py
 """
 
