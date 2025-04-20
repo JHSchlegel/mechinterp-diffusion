@@ -62,10 +62,9 @@ class BaseSAEConfig(Serializable):
 # -----------------------------------------------------------------------------
 @dataclass
 class TopKSAEConfig(BaseSAEConfig):
-    architecture: Literal["topk", "batch_topk"] = "topk"
     k: int = 10
     """
-    Number of top-k activations to keep during the forward pass.
+    Number of TopK activations to keep during the forward pass.
     """
 
     k_aux: int = 256
@@ -75,7 +74,18 @@ class TopKSAEConfig(BaseSAEConfig):
 
     lambda_k_aux: float = 1 / 32
     """
-    Weight for the auxiliary loss term in the top-k architecture.
+    Weight for the auxiliary loss term in the TopK architecture.
+    """
+
+    use_batch_topk: bool = True
+    """
+    Whether to use Batch-TopK SAE
+    """
+
+    standardize_input: bool = False
+    """
+    Whether to standardize input to zero mean and unit variance before
+    encoding. If True, also undo standardization after decoding.
     """
 
 

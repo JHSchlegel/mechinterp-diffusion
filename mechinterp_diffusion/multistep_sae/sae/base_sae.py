@@ -26,6 +26,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# TODO: unit norm decoder grad adjustment
+# TODO: dobule check saving and loading, whether really classmethod makes sense
+# TODO: add pre and postprocessing
+
 
 # =========================================================================== #
 #                            Base Sparse Autoencoder                          #
