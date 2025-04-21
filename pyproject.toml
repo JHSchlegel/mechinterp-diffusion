@@ -35,6 +35,10 @@ dependencies = [
     "transformers",
     "accelerate",
     "pyyaml>=6.0",
+    "datasets==3.5.0",
+    "geom_median==0.1.0",
+    "simple-parsing==0.1.7",
+    "safetensors==0.5.3",
 ]
 
 [project.optional-dependencies]
