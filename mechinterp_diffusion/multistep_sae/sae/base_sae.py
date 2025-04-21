@@ -29,6 +29,8 @@ TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
 logger = logging.getLogger(__name__)
 
+# TODO: add seeding upon initialization
+
 
 # =========================================================================== #
 #                            Base Sparse Autoencoder                          #
@@ -62,6 +64,10 @@ class BaseSAE(nn.Module, ABC):
         self.device: torch.device = torch.device(cfg.device)
         self.to(dtype=self.dtype, device=self.device)
 
+        self.num_batches_inactive: Tensor = torch.zeros(
+            (self.d_sae,), dtype=torch.int64, device=self.device
+        )
+
     def to(self, *args: Any, **kwargs: Any) -> "BaseSAE":
         """
         Move the model to the specified device and data type.
@@ -79,6 +85,16 @@ class BaseSAE(nn.Module, ABC):
             self.dtype = kwargs["dtype"]
 
         return self
+
+    def update_inactive_features(self, acts: Tensor) -> None:
+        """
+        Update how many batches the features have been inactive for.
+
+        Args:
+            acts (Tensor): Activation tensor (batch_size * d_spatial, d_sae).
+        """
+        self.num_batches_inactive += (acts.sum(0) == 0).int()
+        self.num_batches_inactive[acts.sum(0) != 0] = 0
 
     def preprocess_input(self, x: Tensor) -> Tuple[Tensor, Dict[str, Any]]:
         """Preprocess the input data before encoding.
@@ -125,7 +141,8 @@ class BaseSAE(nn.Module, ABC):
                     shift values.
 
         Returns:
-            Tensor: Postprocessed output tensor.
+            Tensor: Postprocessed output tensor. Note that shape is still
+                (batch_size * d_spatial, d_in).
         """
         if self.cfg.standardize_input:
             # Undo standardization
@@ -286,11 +303,11 @@ class BaseSAE(nn.Module, ABC):
         raise NotImplementedError("Encoding not implemented in baseclass.")
 
     @abstractmethod
-    def decode(self, latents: Tensor) -> Any:
+    def decode(self, z: Tensor) -> Any:
         """Decode the latent representation back to the original space.
 
         Args:
-            latents (Tensor): Latent representation of shape
+            z (Tensor): Latent representation of shape
                 (batch_size * d_spatial, d_sae)
 
         Returns:
@@ -311,28 +328,3 @@ class BaseSAE(nn.Module, ABC):
                 information required for loss calculation.
         """
         raise NotImplementedError("Forward pass not implemented in baseclass.")
-
-    @abstractmethod
-    def calculate_loss(
-        self,
-        forward_output: Dict[str, Tensor],
-        original_input: Tensor,
-    ) -> Tuple[Tensor, Dict[str, Tensor]]:
-        """Calculates the total loss and individual loss components.
-
-        Args:
-            forward_output (Dict[str, Tensor]): The dictionary returned by
-                forward() method.
-            original_input (Tensor): The original input tensor x passed to
-                forward() method.
-
-        Returns:
-            Tuple[Tensor, Dict[str, Tensor]]:
-                - Tensor: The total calculated loss, ready for backward().
-                - Dict[str, Tensor]: A dictionary of individual loss components
-                  (e.g., {'l2_loss': ..., 'l1_loss': ..., 'total_loss': ...})
-                  for logging purposes. The total loss should also be included.
-        """
-        raise NotImplementedError(
-            "Loss calculation not implemented in baseclass."
-        )
