@@ -50,6 +50,16 @@ class BaseSAEConfig(Serializable):
     encoding. If True, also undo standardization after decoding.
     """
 
+    num_batches_dead_threshold: int = 2441
+    """
+    Number of batches/steps without activation to consider a feature dead.
+    """
+
+    seed: int = 42
+    """
+    Random seed for reproducibility.
+    """
+
     def __post_init__(self):
         if self.dtype not in ["float16", "float32"]:
             raise ValueError(
@@ -78,9 +88,14 @@ class TopKSAEConfig(BaseSAEConfig):
     How many topk dead features to use for auxiliary loss term.
     """
 
-    lambda_k_aux: float = 1 / 32
+    lambda_auxk: float = 1 / 32
     """
     Weight for the auxiliary loss term in the TopK architecture.
+    """
+
+    l1_loss_weight: float = 0.0
+    """
+    Weight for the L1 loss term in the TopK architecture.
     """
 
     use_batch_topk: bool = True
