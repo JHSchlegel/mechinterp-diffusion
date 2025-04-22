@@ -176,5 +176,5 @@ activations/
 
 *misc.*
 
-*/checkpoints*/
-*/wandb/
+**/checkpoints/**
+**/wandb/**
