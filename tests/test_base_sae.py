@@ -34,8 +34,8 @@ class SimpleSAE(BaseSAE):
         """Simple weight initialization for testing"""
         torch.nn.init.normal_(self.W_enc.weight, mean=0.0, std=0.02)
         torch.nn.init.normal_(self.W_dec.weight, mean=0.0, std=0.02)
-        torch.nn.init.zeros_(self.pre_bias)
-        torch.nn.init.zeros_(self.latent_bias)
+        torch.nn.init.zeros_(self.b_enc)
+        torch.nn.init.zeros_(self.b_dec)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """Simple encoding step
@@ -46,9 +46,9 @@ class SimpleSAE(BaseSAE):
         Returns:
             torch.Tensor: encoded output
         """
-        x = x - self.pre_bias
+        x = x - self.b_dec
         h = self.W_enc(x)
-        return F.relu(h) + self.latent_bias
+        return F.relu(h) + self.b_enc
 
     def decode(self, latents: Tensor) -> Tensor:
         """Simple decoding step
@@ -59,7 +59,7 @@ class SimpleSAE(BaseSAE):
         Returns:
             Tensor: decoded output
         """
-        return self.W_dec(latents) + self.pre_bias
+        return self.W_dec(latents) + self.b_dec
 
     def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """Full forward pass: encode -> decode"
@@ -101,8 +101,8 @@ class TestBaseSAE(unittest.TestCase):
         # check shape of weights
         self.assertEqual(self.sae.W_enc.weight.shape, (256, 128))
         self.assertEqual(self.sae.W_dec.weight.shape, (128, 256))
-        self.assertEqual(self.sae.pre_bias.shape, (128,))
-        self.assertEqual(self.sae.latent_bias.shape, (256,))
+        self.assertEqual(self.sae.b_enc.shape, (256,))
+        self.assertEqual(self.sae.b_dec.shape, (128,))
 
     def test_unit_norm_decoder(self) -> None:
         """
