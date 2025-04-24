@@ -18,7 +18,7 @@ from torch import Tensor
 from .base_sae import BaseSAE
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from .config import TopKSAEConfig
+from config import TopKSAEConfig
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,9 @@ class TopKSAE(BaseSAE):
         Returns:
             torch.Tensor: Encoded tensor pre activation and pre topk
         """
-        x_cent = x - self.pre_bias
+        x_cent = x - self.b_dec
         # feature activations pre relu and pre topk:
-        return self.W_enc(x_cent)
+        return self.W_enc(x_cent) + self.b_enc
 
     def decode(self, z: Tensor) -> Tensor:
         """Decodes the encoded tensor using the decoder part of the network.
@@ -120,7 +120,7 @@ class TopKSAE(BaseSAE):
         Returns:
             torch.Tensor: Decoded tensor
         """
-        return self.W_dec(z) + self.latent_bias
+        return self.W_dec(z) + self.b_dec
 
     def _get_topk(
         self, acts: Tensor, k: int = 32, batch_size: int = 4092
@@ -140,7 +140,7 @@ class TopKSAE(BaseSAE):
         # ---------------------------------------------------------------------
         # Top-K Selection
         # ---------------------------------------------------------------------
-        if self.use_batch_topk:
+        if self.cfg.use_batch_topk:
             # -----------------------------------------------------------------
             # Batch Top-K: Select top k*batch_size across the entire batch
             # -----------------------------------------------------------------
@@ -148,9 +148,9 @@ class TopKSAE(BaseSAE):
 
             acts_flat = acts.flatten()
 
-            # Find the top k * batch_size values and their indices
+            # Find the top k * batch_size * d_spatial values and their indices
             topk_values, topk_indices = torch.topk(
-                acts_flat, k * batch_size, dim=-1, sorted=False
+                acts_flat, k * acts.shape[0], dim=-1, sorted=False
             )
             # Create a zero tensor and scatter the top-k values back
             feature_acts_sparse = torch.zeros_like(acts_flat)
@@ -244,7 +244,7 @@ class TopKSAE(BaseSAE):
             residual = x.float() - x_reconstructed.float()
             acts_topk_aux = torch.topk(
                 acts[:, dead_features],
-                min(self.cfg.top_k_aux, dead_features.sum()),
+                min(self.cfg.k_aux, dead_features.sum()),
                 dim=-1,
             )
 
