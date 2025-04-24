@@ -1,34 +1,122 @@
 """
-Configuration file for extracting latent activations from SDXL multi-step
-diffusion model and training sparse autoencoders on them.
-
-Source/ adapted from:
-    https://github.com/JHSchlegel/SAeUron/blob/main/SAE/config.py
-Adaptations made:
+Configuration file for extracting latent representations from multi-step
+diffusion models and training sparse autoencoders on these representations.
 """
-
-import os
-from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Union
 
 # =========================================================================== #
 #                            Packages and Presets                             #
 # =========================================================================== #
+
+import datetime
+import os
+from dataclasses import dataclass, field
+from typing import List, Literal, Optional, Union
+
 from simple_parsing import Serializable
-
-# TODO: implement train and test split logic
-
 
 # =========================================================================== #
 #                           SAE Configuration                                 #
 # =========================================================================== #
+
+
+# -----------------------------------------------------------------------------
+# Abstract Base Class SAE
+# -----------------------------------------------------------------------------
 @dataclass
-class SAEConfig(Serializable):
-    architecture: Literal["topk", "jump_relu"] = "jump_relu"
+class BaseSAEConfig(Serializable):
+    dtype: Literal["float32", "float16"] = "float32"
+    """
+    Data type to use for the model weights. One of ['float16', 'float32']
+    """
 
-    dtype: str = "float32"
+    device: str = "cuda"
+    """
+    Device to use for the model weights.
+    """
 
-    expansion_factor: int = 8
+    d_in: int = 1_280
+    """
+    Number of input channels of the latent representations of the U-Net
+    cross-attention blocks.
+    """
+
+    d_sae: int = 5120
+    """
+    Number of columns of the decoder weight matrix i.e. the number of features.
+    """
+
+    standardize_input: bool = False
+    """
+    Whether to standardize input to zero mean and unit variance before
+    encoding. If True, also undo standardization after decoding.
+    """
+
+    num_batches_dead_threshold: int = 5
+    """
+    Number of batches/steps without activation to consider a feature dead.
+    """
+
+    def __post_init__(self):
+        if self.dtype not in ["float16", "float32"]:
+            raise ValueError(
+                f"Invalid dtype: {self.dtype}. Must be one of "
+                f"['float16', 'float32']"
+            )
+
+        if not isinstance(self.device, str):
+            raise ValueError(
+                f"Invalid device: {self.device}. Must be of type str."
+            )
+
+
+# -----------------------------------------------------------------------------
+# TopK
+# -----------------------------------------------------------------------------
+@dataclass
+class TopKSAEConfig(BaseSAEConfig):
+    k: int = 10
+    """
+    Number of TopK activations to keep during the forward pass.
+    """
+
+    k_aux: int = 256
+    """
+    How many topk dead features to use for auxiliary loss term.
+    """
+
+    auxk_loss_weight: float = 1 / 32
+    """
+    Weight for the auxiliary loss term in the TopK architecture.
+    """
+
+    l1_loss_weight: float = 0.0
+    """
+    Weight for the L1 loss term in the TopK architecture.
+    """
+
+    use_batch_topk: bool = True
+    """
+    Whether to use Batch-TopK SAE
+    """
+
+    standardize_input: bool = False
+    """
+    Whether to standardize input to zero mean and unit variance before
+    encoding. If True, also undo standardization after decoding.
+    """
+
+    normalize_decoder: bool = True
+    """
+    Whether to normalize the decoder weights.
+    """
+
+
+# -----------------------------------------------------------------------------
+# Jump ReLU
+# -----------------------------------------------------------------------------
+@dataclass
+class JumpReLUConfig(BaseSAEConfig):
+    threshold = 0.0
 
 
 # =========================================================================== #
@@ -125,4 +213,118 @@ class LatentsExtractionConfig(Serializable):
                 f"subset_size-{str(self.dataset_size)}",
                 f"{self.num_inference_steps}-inference-steps",
                 f"every-{self.extract_every_n_timesteps}-steps",
+            )
+
+
+# =========================================================================== #
+#                        SAE Trainer Configuration                           #
+# =========================================================================== #
+@dataclass
+class TrainerConfig(Serializable):
+    """Configuration settings for the SAE Trainer."""
+
+    # -------------------------------------------------------------------------
+    # General settings
+    # -------------------------------------------------------------------------
+    dataset_path: str = (
+        "../../../activations/stable-diffusion-2-1/flickr30k/train/subset_size-40000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+    )
+    """Path to the directory containing the activation dataset."""
+
+    seed: int = 42
+    """Random seed for reproducibility."""
+
+    # -------------------------------------------------------------------------
+    # Training settings
+    # -------------------------------------------------------------------------
+
+    lr: float = 3e-4
+    """Learning rate for the optimizer."""
+
+    batch_size: int = 256
+    """Number of activation vectors per training batch."""
+
+    num_epochs: int = 1
+    """Number of epochs to train for."""
+
+    total_training_steps: int | None = None
+    """
+    Overwrite the total number of training steps. If None, defaults to
+    (dataset_size // batch_size) * num_epochs.
+    """
+
+    target_timesteps: Optional[List[int]] = None
+    """
+    Specific diffusion timesteps to train on. If None, trains on all available
+    timesteps in the dataset.
+    """
+
+    warmup_steps: int = 500
+    """Number of learning rate warmup steps."""
+
+    decay_steps: Optional[int] = None
+    """
+    Number of learning rate decay steps. If None, defaults to total steps minus
+    warmup steps.
+    """
+
+    adam_beta1: float = 0.9
+    """Adam optimizer beta1."""
+
+    adam_beta2: float = 0.999
+    """Adam optimizer beta2."""
+
+    max_grad_norm: float = 1.0
+    """Maximum norm for gradient clipping."""
+
+    # -------------------------------------------------------------------------
+    # Wandb and logging
+    # -------------------------------------------------------------------------
+    wandb_project: Optional[str] = "sae_training"
+    """Weights & Biases project name."""
+
+    wandb_dir: Optional[str] = "../../../wandb"
+
+    wandb_entity: Optional[str] = None
+    """Weights & Biases entity name (optional)."""
+
+    wandb_run_name: Optional[str] = None
+    """Weights & Biases run name (optional, defaults to timestamp)."""
+
+    wandb_log_code: bool = True
+    """Whether to log the code to Weights & Biases."""
+
+    log_frequency: int = 1
+    """Log metrics to wandb every N steps."""
+
+    plot_frequency: int = 10
+    """Generate and log plots to wandb every N steps."""
+
+    save_frequency: int = 200
+    """Save model checkpoint every N steps."""
+
+    checkpoint_path: str = "../../../checkpoints"
+    """Directory to save model checkpoints."""
+
+
+# =========================================================================== #
+#                          SAE Training Configuration                         #
+# =========================================================================== #
+@dataclass
+class TrainingConfig(Serializable):
+    """Main configuration combining SAE and Trainer settings."""
+
+    sae: Union[TopKSAEConfig, JumpReLUConfig] = field(default=None)
+    """Specific SAE model configuration."""
+
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    """Trainer configuration settings."""
+
+    def __post_init__(self):
+        if self.trainer.wandb_run_name is None:
+            now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            sae_type = type(self.sae).__name__.replace("Config", "")
+            self.trainer.wandb_run_name = (
+                f"{sae_type}_dsae-{self.sae.d_sae}_{now}"
             )

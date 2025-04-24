@@ -89,7 +89,7 @@ def main() -> None:
             str(cfg.extracted_latents_path), "activations_config.json"
         )
         with open(config_path, "w") as f:
-            json.dump(asdict(cfg), f, indent=2)
+            json.dump(asdict(cfg), f, indent=4)
         logger.info(f"Configuration saved to {config_path}")
     run_end_time = time.time()
     logger.info(

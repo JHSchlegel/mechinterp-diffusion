@@ -175,3 +175,7 @@ flickr30k*/
 activations/
 
 *misc.*
+
+**/checkpoints/**
+**/wandb/**
+**todo.md**
