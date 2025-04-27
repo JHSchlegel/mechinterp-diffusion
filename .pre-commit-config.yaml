@@ -23,4 +23,4 @@ repos:
     rev: v0.11.0
     hooks:
       - id: ruff
-        args: [--fix]
+        args: [--fix, --ignore=E402]
