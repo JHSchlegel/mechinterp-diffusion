@@ -179,3 +179,7 @@ activations/
 **/checkpoints/**
 **/wandb/**
 **todo.md**
+
+**/results/**
+**/ablation_study/**
+**/ablation_results/**
