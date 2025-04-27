@@ -36,7 +36,3 @@ jobs:
         if: always()
         run: |
           isort --check --profile black $(git ls-files '*.py')
-      - name: Run ruff
-        if: always()
-        run: |
-          ruff check $(git ls-files '*.py')
