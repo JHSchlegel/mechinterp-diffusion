@@ -51,9 +51,9 @@ class BaseSAEConfig(Serializable):
     encoding. If True, also undo standardization after decoding.
     """
 
-    num_batches_dead_threshold: int = 5
+    num_tokens_dead_threshold: int = 500_000
     """
-    Number of batches/steps without activation to consider a feature dead.
+    Number of tokens/samples without activation to consider a feature dead.
     """
 
     def __post_init__(self):
@@ -84,7 +84,7 @@ class TopKSAEConfig(BaseSAEConfig):
     How many topk dead features to use for auxiliary loss term.
     """
 
-    auxk_loss_weight: float = 1 / 32
+    auxk_loss_weight: float = 0.5  # 1 / 32
     """
     Weight for the auxiliary loss term in the TopK architecture.
     """
@@ -111,12 +111,38 @@ class TopKSAEConfig(BaseSAEConfig):
     """
 
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 # Jump ReLU
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 @dataclass
 class JumpReLUConfig(BaseSAEConfig):
-    threshold = 0.0
+    initial_log_threshold: float = 0.1
+    """Initial log threshold value for jumping."""
+
+    c: float = 4.0
+    """Parameter for tanh in sparsity loss."""
+
+    bandwidth: float = 2.0
+    """Bandwidth parameter for straight-through estimator."""
+
+    lambda_s: float = 10.0
+    """Sparsity loss weight."""
+
+    lambda_p: float = 3e-6
+    """Pre-activation loss weight to reduce dead features."""
+
+    warmup_lambda_s: bool = True
+    """Whether to warm up lambda_s linearly over training."""
+
+    standardize_input: bool = False
+    """
+    Whether to standardize input to zero mean and unit variance before encoding
+    """
+
+    normalize_decoder: bool = False
+    """
+    Whether to normalize the decoder weights during training.
+    """
 
 
 # =========================================================================== #
@@ -224,7 +250,7 @@ class TrainerConfig(Serializable):
     """Configuration settings for the SAE Trainer."""
 
     # -------------------------------------------------------------------------
-    # General settings
+    # Dataloading settings
     # -------------------------------------------------------------------------
     dataset_path: str = (
         "../../../activations/stable-diffusion-2-1/flickr30k/train/subset_size-40000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
@@ -234,23 +260,29 @@ class TrainerConfig(Serializable):
     seed: int = 42
     """Random seed for reproducibility."""
 
+    buffer_size: int = 50
+    """
+    Number of examples to buffer at once for dataloading.
+    """
+
     # -------------------------------------------------------------------------
     # Training settings
     # -------------------------------------------------------------------------
 
-    lr: float = 3e-4
-    """Learning rate for the optimizer."""
+    lr: float | None = None
+    """
+    Learning rate for the optimizer. If None, scaling laws are used based on
+    d_sae.
+    """
 
-    batch_size: int = 256
+    effective_batch_size: int = 4096
     """Number of activation vectors per training batch."""
 
-    num_epochs: int = 1
-    """Number of epochs to train for."""
-
-    total_training_steps: int | None = None
+    num_tokens: int = int(2e8)
     """
-    Overwrite the total number of training steps. If None, defaults to
-    (dataset_size // batch_size) * num_epochs.
+    Number of tokens to process during training. This is the number of
+    activation vectors to process, not the number of training steps. The number
+    of training steps is approximately to num_tokens // effective_batch_size.
     """
 
     target_timesteps: Optional[List[int]] = None
@@ -259,14 +291,27 @@ class TrainerConfig(Serializable):
     timesteps in the dataset.
     """
 
-    warmup_steps: int = 500
-    """Number of learning rate warmup steps."""
+    lr_scheduler_type: str = "constant"
+    """
+    Type of learning rate scheduler to use. See Hugging Face documentation for
+    more details:
+    https://huggingface.co/docs/transformers/en/main_classes/optimizer_schedules
 
-    decay_steps: Optional[int] = None
+    Scheduler types:
+    - “linear” = get_linear_schedule_with_warmup
+    - “cosine” = get_cosine_schedule_with_warmup
+    - “cosine_with_restarts”=get_cosine_with_hard_restarts_schedule_with_warmup
+    - “polynomial” = get_polynomial_decay_schedule_with_warmup
+    - “constant” = get_constant_schedule
+    - “constant_with_warmup” = get_constant_schedule_with_warmup
+    - “inverse_sqrt” = get_inverse_sqrt_schedule
+    - “reduce_lr_on_plateau” = get_reduce_on_plateau_schedule
+    - “cosine_with_min_lr” = get_cosine_with_min_lr_schedule_with_warmup
+    - “warmup_stable_decay” = get_wsd_schedule
     """
-    Number of learning rate decay steps. If None, defaults to total steps minus
-    warmup steps.
-    """
+
+    warmup_steps: int = 0
+    """Number of learning rate warmup steps."""
 
     adam_beta1: float = 0.9
     """Adam optimizer beta1."""
@@ -297,10 +342,10 @@ class TrainerConfig(Serializable):
     log_frequency: int = 1
     """Log metrics to wandb every N steps."""
 
-    plot_frequency: int = 10
+    plot_frequency: int = 5_000
     """Generate and log plots to wandb every N steps."""
 
-    save_frequency: int = 200
+    save_frequency: int = 5_000
     """Save model checkpoint every N steps."""
 
     checkpoint_path: str = "../../../checkpoints"
@@ -328,3 +373,7 @@ class TrainingConfig(Serializable):
             self.trainer.wandb_run_name = (
                 f"{sae_type}_dsae-{self.sae.d_sae}_{now}"
             )
+        if self.trainer.lr is None:
+            # scaling law for lr; use 2e-4 for d_sae = 2**14
+            # from Figure 3 in https://arxiv.org/pdf/2406.04093
+            self.trainer.lr = 2e-4 / (self.sae.d_sae / (2 << 13)) ** 0.5
