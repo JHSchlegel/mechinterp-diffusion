@@ -26,6 +26,12 @@ from simple_parsing import (
     ArgumentParser,
 )
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",  # noqa: E501
+)
+logger = logging.getLogger(__name__)
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config import (
@@ -36,20 +42,10 @@ from config import (
     TrainingConfig,
 )
 from sae.base_sae import BaseSAE
+from sae.jumprelu_sae import JumpReLUSAE
 from sae.topk_sae import TopKSAE
 from sae.trainer import SAETrainer
 from utils.reproducibility import set_all_seeds
-
-log_filename = "train_sae.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",  # noqa: E501
-    handlers=[
-        logging.FileHandler(log_filename),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger(__name__)
 
 
 # =========================================================================== #
@@ -61,6 +57,18 @@ def main() -> None:
     """
     # Parse arguments
     config, sae_type = parse_arguments()
+
+    os.makedirs(config.trainer.checkpoint_path, exist_ok=True)
+
+    log_filename = config.trainer.checkpoint_path + "/train_sae.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",  # noqa: E501
+        handlers=[
+            logging.FileHandler(log_filename),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
 
     logger.info(f"SAE Type: {sae_type}")
     logger.info(f"SAE Config: {config.sae}")
@@ -169,9 +177,8 @@ def get_sae_model_class(sae_config: BaseSAEConfig) -> Type[BaseSAE]:
     """
     if isinstance(sae_config, TopKSAEConfig):
         return TopKSAE
-    # elif isinstance(sae_config, JumpReLUConfig):
-    #     # Import the class here to avoid circular imports
-    #     return JumpReLUSAE
+    elif isinstance(sae_config, JumpReLUConfig):
+        return JumpReLUSAE
     else:
         logger.error(
             f"Unsupported SAE config type received: {type(sae_config)}"
