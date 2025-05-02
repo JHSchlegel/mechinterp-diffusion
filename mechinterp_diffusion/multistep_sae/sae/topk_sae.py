@@ -84,7 +84,8 @@ class TopKSAE(BaseSAE):
         # Decoding
         # ---------------------------------------------------------------------
         x_reconstructed = self.decode(acts_topk)
-        self.update_inactive_features(acts_topk)
+        if self.training:
+            self.update_inactive_features(acts_topk)
 
         # TODO: potentially add multi topk logic here
 
