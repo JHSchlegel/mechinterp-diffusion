@@ -111,40 +111,6 @@ class TopKSAEConfig(BaseSAEConfig):
     """
 
 
-# -------------------------------------------------------------------------
-# Jump ReLU
-# -------------------------------------------------------------------------
-@dataclass
-class JumpReLUConfig(BaseSAEConfig):
-    initial_log_threshold: float = 0.1
-    """Initial log threshold value for jumping."""
-
-    c: float = 4.0
-    """Parameter for tanh in sparsity loss."""
-
-    bandwidth: float = 2.0
-    """Bandwidth parameter for straight-through estimator."""
-
-    lambda_s: float = 10.0
-    """Sparsity loss weight."""
-
-    lambda_p: float = 3e-6
-    """Pre-activation loss weight to reduce dead features."""
-
-    warmup_lambda_s: bool = True
-    """Whether to warm up lambda_s linearly over training."""
-
-    standardize_input: bool = False
-    """
-    Whether to standardize input to zero mean and unit variance before encoding
-    """
-
-    normalize_decoder: bool = False
-    """
-    Whether to normalize the decoder weights during training.
-    """
-
-
 # =========================================================================== #
 #                          Latents Extraction Configuration                   #
 # =========================================================================== #
@@ -359,7 +325,7 @@ class TrainerConfig(Serializable):
 class TrainingConfig(Serializable):
     """Main configuration combining SAE and Trainer settings."""
 
-    sae: Union[TopKSAEConfig, JumpReLUConfig] = field(default=None)
+    sae: Union[TopKSAEConfig] = field(default=None)
     """Specific SAE model configuration."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
