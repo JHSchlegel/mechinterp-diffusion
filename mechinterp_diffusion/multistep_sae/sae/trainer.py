@@ -164,9 +164,12 @@ class SAETrainer:
             .cpu()
         )
 
-        self.sae_model.b_dec.data = (
-            compute_geometric_median(stats_acts_sample).median.cuda().float()
-        )
+        if config.sae.standardize_input:
+            # standardize the activations
+            stats_acts_sample = (
+                stats_acts_sample - stats_acts_sample.mean(dim=0)
+            ) / (stats_acts_sample.std(dim=0) + 1e-8)
+
         self.sae_model.mse_scale = (
             1
             / (
@@ -177,12 +180,17 @@ class SAETrainer:
                 ** 2
             ).mean()
         ).item()
+
+        self.sae_model.b_dec.data = (
+            compute_geometric_median(stats_acts_sample).median.cuda().float()
+        )
         del tmp_dataloader, stats_acts_sample
 
         logging.info(
             f"b_dec initialized to geometric median of first 32768 samples: "
             f"{self.sae_model.b_dec.data}"
         )
+        logging.info(f"mse_scale initialized to: {self.sae_model.mse_scale}")
 
         # ---------------------------------------------------------------------
         # Optimizer and Learning Rate Scheduler

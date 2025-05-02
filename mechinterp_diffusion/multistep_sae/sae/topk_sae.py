@@ -196,7 +196,9 @@ class TopKSAE(BaseSAE):
         """
         l0_loss = (acts_topk > 0.0).float().sum(-1).mean()
         l1_loss = acts_topk.float().abs().sum(-1).mean()
-        l2_loss = (x_reconstructed.float() - x.float()).pow(2).mean()
+        l2_loss = (x_reconstructed.float() - x.float()).pow(
+            2
+        ).mean() * self.mse_scale
 
         explained_var = explained_variance(
             x_reconstructed=x_reconstructed, x=x
@@ -226,7 +228,7 @@ class TopKSAE(BaseSAE):
         # Combine Losses
         # ---------------------------------------------------------------------
         loss = (
-            l2_loss * self.mse_scale
+            l2_loss
             + auxk_loss * self.cfg.auxk_loss_weight * auxk_scale
             + l1_loss * self.cfg.l1_loss_weight
         )
