@@ -51,7 +51,7 @@ class BaseSAEConfig(Serializable):
     encoding. If True, also undo standardization after decoding.
     """
 
-    num_tokens_dead_threshold: int = 500_000
+    num_tokens_dead_threshold: int = 5_000_000
     """
     Number of tokens/samples without activation to consider a feature dead.
     """
@@ -84,7 +84,7 @@ class TopKSAEConfig(BaseSAEConfig):
     How many topk dead features to use for auxiliary loss term.
     """
 
-    auxk_loss_weight: float = 0.5  # 1 / 32
+    auxk_loss_weight: float = 0.1  # 1 / 32
     """
     Weight for the auxiliary loss term in the TopK architecture.
     """
@@ -94,7 +94,7 @@ class TopKSAEConfig(BaseSAEConfig):
     Weight for the L1 loss term in the TopK architecture.
     """
 
-    use_batch_topk: bool = True
+    use_batch_topk: bool = False
     """
     Whether to use Batch-TopK SAE
     """
