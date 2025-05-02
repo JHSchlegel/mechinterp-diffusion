@@ -183,3 +183,5 @@ activations/
 **/results/**
 **/ablation_study/**
 **/ablation_results/**
+**/outputs/**
+**/output/**
