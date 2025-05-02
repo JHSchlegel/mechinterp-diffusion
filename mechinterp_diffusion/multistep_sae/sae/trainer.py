@@ -36,10 +36,9 @@ import wandb
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config import TrainerConfig, TrainingConfig
-from utils.activations_iterator import CustomActivationsDataloader
+from utils.activations_iterator import CustomActivationsIterator
 
 from .base_sae import BaseSAE
-from .jumprelu_sae import JumpReLUSAE
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -131,7 +130,7 @@ class SAETrainer:
 
         self.train_dataset.shuffle(seed=self.trainer_cfg.seed)
 
-        self.dataloader = CustomActivationsDataloader(
+        self.dataloader = CustomActivationsIterator(
             dataset=self.train_dataset,
             batch_size=self.trainer_cfg.effective_batch_size,
             total_tokens=self.trainer_cfg.num_tokens,
@@ -142,7 +141,7 @@ class SAETrainer:
         # Initialize b_dec and mse_scale from data
         # ---------------------------------------------------------------------
         # initialize b_dec using geometric median of first 10 batches:
-        tmp_dataloader = CustomActivationsDataloader(
+        tmp_dataloader = CustomActivationsIterator(
             dataset=self.train_dataset,
             batch_size=4096,
             total_tokens=32768,
@@ -222,9 +221,6 @@ class SAETrainer:
             logger.info("Learning rate scheduler initialized.")
         else:
             self.lr_scheduler = lr_scheduler
-
-        if isinstance(self.sae_model, JumpReLUSAE):
-            self.sae_model.total_steps = self.total_training_steps
 
         # ---------------------------------------------------------------------
         # Checkpointing and Logging
@@ -350,7 +346,7 @@ class SAETrainer:
             self.sae_model.eval()
 
             # get 50k samples for plotting from dataset
-            tmp_loader = CustomActivationsDataloader(
+            tmp_loader = CustomActivationsIterator(
                 dataset=self.train_dataset,
                 batch_size=self.trainer_cfg.effective_batch_size,
                 total_tokens=50_000,
