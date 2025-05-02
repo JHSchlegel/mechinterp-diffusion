@@ -6,10 +6,6 @@ via command line arguments.
 Usage examples:
     # TopK SAE
     python train_sae.py TopK --k 10 --lr 0.001
-    python train_sae.py TopK -k 10 --batch-size 128 --num-epochs 5
-
-    # JumpReLU SAE
-    python train_sae.py JumpReLU --jump_threshold 0.5 --lr 0.0001
 """
 
 # =========================================================================== #
@@ -36,13 +32,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config import (
     BaseSAEConfig,
-    JumpReLUConfig,
     TopKSAEConfig,
     TrainerConfig,
     TrainingConfig,
 )
 from sae.base_sae import BaseSAE
-from sae.jumprelu_sae import JumpReLUSAE
 from sae.topk_sae import TopKSAE
 from sae.trainer import SAETrainer
 from utils.reproducibility import set_all_seeds
@@ -128,12 +122,12 @@ def parse_arguments() -> Tuple[TrainingConfig, str]:
 
     Returns:
         tuple: (config, sae_type) where config is a TrainingConfig object and
-               sae_type is a string ('TopK' or 'JumpReLU')
+               sae_type is a string ('TopK' or ...)
     """
     # basic parser just to get the SAE type
     parser = ArgumentParser()
     parser.add_argument(
-        "sae_type", choices=["TopK", "JumpReLU"], help="Type of SAE to train"
+        "sae_type", choices=["TopK"], help="Type of SAE to train"
     )
     args, remaining_args = parser.parse_known_args()
 
@@ -148,8 +142,6 @@ def parse_arguments() -> Tuple[TrainingConfig, str]:
     # Add the right config classes based on SAE type
     if sae_type == "TopK":
         parser.add_arguments(TopKSAEConfig, dest="sae")
-    elif sae_type == "JumpReLU":
-        parser.add_arguments(JumpReLUConfig, dest="sae")
     else:
         raise ValueError(f"Unknown SAE type: {sae_type}")
 
@@ -177,8 +169,6 @@ def get_sae_model_class(sae_config: BaseSAEConfig) -> Type[BaseSAE]:
     """
     if isinstance(sae_config, TopKSAEConfig):
         return TopKSAE
-    elif isinstance(sae_config, JumpReLUConfig):
-        return JumpReLUSAE
     else:
         logger.error(
             f"Unsupported SAE config type received: {type(sae_config)}"
