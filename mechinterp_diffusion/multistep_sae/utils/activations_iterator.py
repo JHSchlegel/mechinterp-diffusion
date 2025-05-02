@@ -17,9 +17,9 @@ from torch.utils.data import Dataset
 
 
 # =========================================================================== #
-#                           Activation Dataloader                             #
+#                           Activation Iterator                               #
 # =========================================================================== #
-class CustomActivationsDataloader:
+class CustomActivationsIterator:
     def __init__(
         self,
         dataset: Dataset,
@@ -28,7 +28,6 @@ class CustomActivationsDataloader:
         buffer_size: int = 50,
     ) -> None:
         """
-        Dataloader for efficiently iterating through activation data.
         Iterator for activation data that continues until a specified number of
         tokens is processed, with buffering for performance.
 
@@ -154,8 +153,6 @@ class CustomActivationsDataloader:
             batch = self.buffer[self.pointer : end_idx]
             batch_timesteps = self.timestep_buffer[self.pointer : end_idx]
             self.pointer = end_idx
-
-            print(f"{batch.shape=}, {batch_timesteps=}")
 
             if (
                 tokens_remaining := (self.total_tokens - self.tokens_seen)
