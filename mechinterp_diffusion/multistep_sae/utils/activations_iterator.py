@@ -10,10 +10,13 @@ Adapted from:
 #                              Packages and Presets                           #
 # =========================================================================== #
 
+import logging
 from typing import Any, Dict, Iterator
 
 import torch
-from torch.utils.data import Dataset
+from datasets import Dataset
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================================== #
@@ -51,6 +54,9 @@ class CustomActivationsIterator:
                 f"Expected activations with shape [d_spatial, d_model], got "
                 f"{first_example.shape}"
             )
+        assert (
+            buffer_size >= 5
+        ), "Buffer size should be at least 5 for ensuring diversity."
 
         self.seq_len = first_example.shape[0]  # Spatial dimension
         self.d_model = first_example.shape[1]  # Input dimension
@@ -136,10 +142,12 @@ class CustomActivationsIterator:
                     activation
         """
         while self.tokens_seen < self.total_tokens:
-            # Check if we need to replenish the buffer
+            # renew buffer if buffer not initialized or insufficient data
+            # in buffer
             if (
                 self.buffer is None
-                or self.buffer.shape[0] - self.pointer < self.batch_size
+                or self.buffer.shape[0] - self.pointer
+                < self.batch_size * 4 // 5
             ):
                 to_retrieve = (
                     self.num_in_buffer
@@ -147,28 +155,29 @@ class CustomActivationsIterator:
                     else self.num_in_buffer // 5
                 )
                 self.renew_buffer(to_retrieve)
+                if self.buffer is None or self.buffer.shape[0] <= self.pointer:
+                    logger.error(
+                        "Buffer is empty or insufficient after renewal. "
+                        "Exiting iteration."
+                    )
+                    break
 
-            # Extract a batch from the buffer
-            end_idx = min(self.pointer + self.batch_size, self.buffer.shape[0])
-            batch = self.buffer[self.pointer : end_idx]
-            batch_timesteps = self.timestep_buffer[self.pointer : end_idx]
-            self.pointer = end_idx
+            start_idx = self.pointer
+            end_idx = start_idx + self.batch_size
 
-            if (
-                tokens_remaining := (self.total_tokens - self.tokens_seen)
-            ) < batch.shape[0]:
+            batch = self.buffer[start_idx:end_idx]
+            batch_timesteps = self.timestep_buffer[start_idx:end_idx]
+
+            tokens_remaining = self.total_tokens - self.tokens_seen
+
+            # Only take the remaining tokens to ensure exactly total_tokens
+            # are processed
+            if tokens_remaining < batch.shape[0]:
                 batch = batch[:tokens_remaining]
                 batch_timesteps = batch_timesteps[:tokens_remaining]
 
+            self.pointer += batch.shape[0]
             self.tokens_seen += batch.shape[0]
 
-            # Skip partial batches for consistency
-            if (
-                batch.shape[0] < self.batch_size
-                and tokens_remaining >= self.batch_size
-            ):
-                continue
-
             batch_dict = {"activations": batch, "timestep": batch_timesteps}
-
             yield batch_dict
