@@ -171,6 +171,7 @@ cython_debug/
 .pypirc
 
 flickr30k*/
+laion*/
 *data*/
 activations/
 
