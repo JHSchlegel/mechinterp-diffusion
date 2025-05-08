@@ -236,6 +236,11 @@ class CacheActivationsRunner:
                 "../../../flickr30k_captions"
             )[self.cfg.dataset_split]
 
+        elif self.cfg.dataset_name == "laion":
+            self.dataset = DatasetDict.load_from_disk(
+                "../../../laion-coco_captions"
+            )[self.cfg.dataset_split]
+
         else:
             logger.error(
                 f"Dataset {self.cfg.dataset_name} is not implemented yet"
