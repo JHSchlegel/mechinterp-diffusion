@@ -5,16 +5,17 @@ Handles the training loop, data loading, optimization, logging, plotting, and
 checkpointing for SAE models.
 """
 
-import gc
-
 # =========================================================================== #
 #                            Packages and Presets                             #
 # =========================================================================== #
+import gc
+import json
 import logging
 import math
 import os
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -140,7 +141,7 @@ class SAETrainer:
         # ---------------------------------------------------------------------
         # Initialize b_dec and mse_scale from data
         # ---------------------------------------------------------------------
-        # initialize b_dec using geometric median of first 10 batches:
+        # initialize b_dec using geometric median of first 8 batches:
         tmp_dataloader = CustomActivationsIterator(
             dataset=self.train_dataset,
             batch_size=4096,
@@ -232,6 +233,10 @@ class SAETrainer:
         )
         self.checkpoint_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Checkpoints will be saved to: {self.checkpoint_path}")
+
+        with open(self.checkpoint_path / "config.json", "w") as f:
+            json.dump(asdict(config), f, indent=4)
+        logger.info(f"Saved config to: {self.checkpoint_path / 'config.json'}")
 
     def _init_wandb(self) -> None:
         """Initializes Weights & Biases if configured."""
