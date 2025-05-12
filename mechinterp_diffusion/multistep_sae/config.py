@@ -10,7 +10,7 @@ diffusion models and training sparse autoencoders on these representations.
 import datetime
 import os
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union
 
 from simple_parsing import Serializable
 
@@ -124,7 +124,7 @@ class LatentsExtractionConfig(Serializable):
     extracted_latents_path: Union[str, None] = None
     """Where to save the extracted latent activations."""
 
-    dataset_name: str = "flickr30k"
+    dataset_name: Literal["laion", "flickr30k"] = "laion"
     """
     Name of huggingface prompt dataset to use for extracting the latent
     activations. Must be one of ['laion', 'flickr30k']. For 'laion', the
@@ -309,7 +309,7 @@ class TrainerConfig(Serializable):
     """Log metrics to wandb every N steps."""
 
     plot_frequency: int = 5_000
-    """Generate and log plots to wandb every N steps."""
+    """Generate every N steps."""
 
     save_frequency: int = 5_000
     """Save model checkpoint every N steps."""
@@ -331,15 +331,133 @@ class TrainingConfig(Serializable):
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     """Trainer configuration settings."""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.trainer.wandb_run_name is None:
             now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
             sae_type = type(self.sae).__name__.replace("Config", "")
-            self.trainer.wandb_run_name = (
-                f"{sae_type}_dsae-{self.sae.d_sae}_{now}"
+            timesteps = (
+                str(self.trainer.target_timesteps)
+                if self.trainer.target_timesteps
+                else "all"
             )
+            self.trainer.wandb_run_name = f"{sae_type}_dsae-{self.sae.d_sae}_timesteps-{timesteps}_{now}"  # noqa: E501
         if self.trainer.lr is None:
             # scaling law for lr; use 2e-4 for d_sae = 2**14
             # from Figure 3 in https://arxiv.org/pdf/2406.04093
             self.trainer.lr = 2e-4 / (self.sae.d_sae / (2 << 13)) ** 0.5
+
+
+# =========================================================================== #
+#                       SAE Intervention Configuration                        #
+# =========================================================================== #
+@dataclass
+class SAEInterventionConfig(Serializable):
+    """
+    Configuration for SAE-based feature interventions in diffusion models.
+    """
+
+    output_dir: str = "../../../intervention_outputs"
+    """Directory to save outputs"""
+
+    height: int = 512
+    """Height of the generated images"""
+
+    width: int = 512
+    """Width of the generated images"""
+
+    seed: int = 42
+    """Random seed for reproducibility"""
+
+    model_id: str = "stabilityai/stable-diffusion-2-1"
+    """Hugging Face model ID"""
+
+    sae_path: str = (
+        "../../../checkpoints/TopKSAE_dsae-5120_20250429_192504/step_48829"
+    )
+    """Path to SAE model"""
+
+    target_module: str = "unet.down_blocks.2.attentions.0"
+    """Module to apply intervention to"""
+
+    hook_type: Literal["add", "scale", "reconstruct"] = "add"
+    """Type of hook to apply"""
+
+    timesteps: List[int] = field(default_factory=lambda: [])
+    """Space-separated list of timesteps to intervene at"""
+
+    timestep_values: Dict[int, float] = field(default_factory=dict)
+    """
+    Space separated list of 'timestep=value' pairs for varying intervention
+    strength
+    """
+
+    intervention_mode: Literal["grid", "trajectory"] = "grid"
+    """
+    Whether to generate grid of interventions with different intervention
+    strengths or analyzing intervention over time
+    """
+
+    intervention_values: List[float] = field(
+        default_factory=lambda: [-20.0, -10.0, 10.0, 20.0]
+    )
+    """List of values for intervention strength"""
+
+    features: List[int] = field(default_factory=lambda: [0])
+    """List of feature indices to intervene on"""
+
+    dataset_path: str = "../../../laion-coco_captions"
+    """Path to HuggingFace prompt dataset"""
+
+    dataset_split: str = "test"
+    """Dataset split to use"""
+
+    num_prompts: int = 5
+    """Number of prompts to process"""
+
+    prompt_column: str = "caption"
+    """Column name containing prompts"""
+
+    capture_interval: int = 5
+    """Interval for capturing intermediate diffusion steps"""
+
+    save_activation_heatmap: bool = False
+    """
+    Whether to save heatmap of activations over time in
+    trajectory/ reconstruction mode
+    """
+
+    # -------------------------------------------------------------------------
+    # Diffusion model configuration
+    # -------------------------------------------------------------------------
+    num_inference_steps: int = 25
+    """Number of inference steps for the diffusion process"""
+
+    guidance_scale: float = 9.0
+    """Guidance scale for classifier-free guidance"""
+
+    torch_dtype: Literal["float16", "float32"] = "float32"
+    """Torch data type"""
+
+    def __post_init__(self) -> None:
+        if self.timestep_values and self.intervention_mode == "grid":
+            raise NotImplementedError(
+                "Different intervention strenghts across timesteps are not "
+                "supported for grid intervention mode."
+            )
+
+        if (self.intervention_mode == "trajectory") and len(
+            self.intervention_values
+        ) > 1:
+            raise NotImplementedError(
+                "Multiple intervention values are not supported for "
+                "trajectory intervention and reconstruction mode."
+            )
+
+        if self.intervention_mode == "reconstruct":
+            self.intervention_values = [0.0]
+
+        if self.timestep_values and self.timesteps:
+            raise ValueError(
+                "Specify either 'timesteps' or 'timestep_values', not both."
+            )
