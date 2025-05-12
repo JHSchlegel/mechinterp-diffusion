@@ -14,7 +14,7 @@ Usage examples:
 import logging
 import os
 import sys
-from typing import Tuple, Type
+from typing import Tuple
 
 import torch
 from datasets import Dataset, load_from_disk
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config import (
-    BaseSAEConfig,
     TopKSAEConfig,
     TrainerConfig,
     TrainingConfig,
@@ -49,11 +48,9 @@ def main() -> None:
     """
     Main function for training a Sparse Autoencoder (SAE) model.
     """
-    # Parse arguments
     config, sae_type = parse_arguments()
 
     os.makedirs(config.trainer.checkpoint_path, exist_ok=True)
-
     log_filename = config.trainer.checkpoint_path + "/train_sae.log"
     logging.basicConfig(
         level=logging.INFO,
@@ -91,7 +88,10 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Instantiate model and trainer; start training
     # -------------------------------------------------------------------------
-    SAEModelClass = get_sae_model_class(config.sae)
+    if sae_type == "TopK":
+        SAEModelClass = TopKSAE
+    else:
+        raise TypeError(f"Unsupported SAE type: {sae_type}")
     logger.info(f"Initializing SAE model ({SAEModelClass.__name__})...")
     sae_model: BaseSAE = SAEModelClass(config.sae).to(device)
     logger.info(
@@ -155,25 +155,6 @@ def parse_arguments() -> Tuple[TrainingConfig, str]:
     sys.argv = old_argv
 
     return config, sae_type
-
-
-def get_sae_model_class(sae_config: BaseSAEConfig) -> Type[BaseSAE]:
-    """Maps an SAE config object to its corresponding model class.
-
-    Args:
-        sae_config (BaseSAEConfig): The configuration object for the SAE model.
-
-    Returns:
-        Type[BaseSAE]: The class of the SAE model corresponding to the
-            provided configuration.
-    """
-    if isinstance(sae_config, TopKSAEConfig):
-        return TopKSAE
-    else:
-        logger.error(
-            f"Unsupported SAE config type received: {type(sae_config)}"
-        )
-        raise TypeError(f"Unsupported SAE config type: {type(sae_config)}")
 
 
 if __name__ == "__main__":
