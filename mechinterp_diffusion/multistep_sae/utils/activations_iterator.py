@@ -146,8 +146,7 @@ class CustomActivationsIterator:
             # in buffer
             if (
                 self.buffer is None
-                or self.buffer.shape[0] - self.pointer
-                < self.batch_size * 4 // 5
+                or self.buffer.shape[0] - self.pointer < self.batch_size
             ):
                 to_retrieve = (
                     self.num_in_buffer
@@ -155,6 +154,11 @@ class CustomActivationsIterator:
                     else self.num_in_buffer // 5
                 )
                 self.renew_buffer(to_retrieve)
+
+                # Keep renewing until we have enough for a full batch
+                while self.buffer.shape[0] - self.pointer < self.batch_size:
+                    self.renew_buffer(self.num_in_buffer // 5)
+
                 if self.buffer is None or self.buffer.shape[0] <= self.pointer:
                     logger.error(
                         "Buffer is empty or insufficient after renewal. "
