@@ -51,7 +51,7 @@ class BaseSAEConfig(Serializable):
     encoding. If True, also undo standardization after decoding.
     """
 
-    num_tokens_dead_threshold: int = 5_000_000
+    num_tokens_dead_threshold: int = 10_000_000
     """
     Number of tokens/samples without activation to consider a feature dead.
     """
@@ -84,7 +84,7 @@ class TopKSAEConfig(BaseSAEConfig):
     How many topk dead features to use for auxiliary loss term.
     """
 
-    auxk_loss_weight: float = 0.1  # 1 / 32
+    auxk_loss_weight: float = 1 / 32  #  0.1
     """
     Weight for the auxiliary loss term in the TopK architecture.
     """
@@ -109,6 +109,106 @@ class TopKSAEConfig(BaseSAEConfig):
     """
     Whether to normalize the decoder weights.
     """
+
+
+# -----------------------------------------------------------------------------
+# Crosscoder
+# -----------------------------------------------------------------------------
+@dataclass
+class CrosscoderConfig(Serializable):
+    """Configuration for Sparse Crosscoder.
+
+    The Crosscoder is designed to analyze feature overlap between different
+    groups (e.g., early vs late timesteps). It uses separate encoders for
+    each group but shares a common latent space.
+    """
+
+    # ---------------------------------------------------------------------
+    # Model Architecture Parameters
+    # ---------------------------------------------------------------------
+    d_in: int = 1280
+    """Input dimension (activation vector size)."""
+
+    d_sae: int = 5120
+    """SAE hidden dimension (number of features)."""
+
+    n_groups: int = 2
+    """Number of groups (currently only 2 is supported)."""
+
+    # ---------------------------------------------------------------------
+    # Group Definition Parameters
+    # ---------------------------------------------------------------------
+    early_timesteps: List[int] = field(default_factory=lambda: [961])
+    """Timestep indices that belong to the 'early' group."""
+
+    late_timesteps: List[int] = field(default_factory=lambda: [0])
+    """Timestep indices that belong to the 'late' group."""
+
+    # ---------------------------------------------------------------------
+    # Sparsity Parameters
+    # ---------------------------------------------------------------------
+    k: int = 10
+    """Number of active features (if use_topk=True)."""
+
+    l1_loss_weight: float = 1e-3
+    """Weight for L1 sparsity penalty."""
+
+    use_l1_of_norms: bool = True
+    """Whether to use L1-of-norms loss (scales sparsity by decoder norms)."""
+
+    use_batch_topk: bool = False
+    """Whether to use batchwise topk"""
+
+    # ---------------------------------------------------------------------
+    # Auxiliary Loss Parameters
+    # ---------------------------------------------------------------------
+    use_aux_loss: bool = True
+    """Whether to use auxiliary loss for dead features."""
+
+    k_aux: int = 256
+    """Number of features to use in auxiliary loss."""
+
+    auxk_loss_weight: float = 1.0
+    """Weight for auxiliary loss."""
+
+    num_tokens_dead_threshold: int = 10_000_000
+    """Number of tokens after which a feature is considered dead."""
+
+    # ---------------------------------------------------------------------
+    # Training Parameters
+    # ---------------------------------------------------------------------
+    normalize_decoder: bool = True
+    """Whether to normalize decoder columns to unit norm."""
+
+    standardize_input: bool = False
+    """Whether to standardize inputs to zero mean and unit variance."""
+
+    # ---------------------------------------------------------------------
+    # Device and Precision
+    # ---------------------------------------------------------------------
+    device: str = "cuda"
+    """Device to use for training."""
+
+    dtype: str = "float32"
+    """Data type for model parameters."""
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        assert self.d_in > 0, "d_in must be positive"
+        assert self.d_sae > 0, "d_sae must be positive"
+        assert self.n_groups == 2, "Only 2 groups currently supported"
+        assert (
+            len(self.early_timesteps) > 0
+        ), "early_timesteps must be non-empty"
+        assert len(self.late_timesteps) > 0, "late_timesteps must be non-empty"
+
+        # Check for overlap between early and late timesteps
+        early_set = set(self.early_timesteps)
+        late_set = set(self.late_timesteps)
+        overlap = early_set & late_set
+        assert (
+            len(overlap) == 0
+        ), f"Timesteps cannot be in both groups: {overlap}"
 
 
 # =========================================================================== #
@@ -219,7 +319,7 @@ class TrainerConfig(Serializable):
     # Dataloading settings
     # -------------------------------------------------------------------------
     dataset_path: str = (
-        "../../../activations/stable-diffusion-2-1/flickr30k/train/subset_size-40000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "../../../activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the directory containing the activation dataset."""
 
@@ -244,7 +344,7 @@ class TrainerConfig(Serializable):
     effective_batch_size: int = 4096
     """Number of activation vectors per training batch."""
 
-    num_tokens: int = int(2e8)
+    num_tokens: int = int(2e9)
     """
     Number of tokens to process during training. This is the number of
     activation vectors to process, not the number of training steps. The number
@@ -308,10 +408,10 @@ class TrainerConfig(Serializable):
     log_frequency: int = 1
     """Log metrics to wandb every N steps."""
 
-    plot_frequency: int = 5_000
+    plot_frequency: int = 50_000
     """Generate every N steps."""
 
-    save_frequency: int = 5_000
+    save_frequency: int = 50_000
     """Save model checkpoint every N steps."""
 
     checkpoint_path: str = "../../../checkpoints"
@@ -341,7 +441,11 @@ class TrainingConfig(Serializable):
                 if self.trainer.target_timesteps
                 else "all"
             )
-            self.trainer.wandb_run_name = f"{sae_type}_dsae-{self.sae.d_sae}_timesteps-{timesteps}_{now}"  # noqa: E501
+            if self.sae.use_batch_topk:
+                sae_name = "BatchTopKSAE"
+            else:
+                sae_name = sae_type
+            self.trainer.wandb_run_name = f"{sae_name}_dsae-{self.sae.d_sae}_timesteps-{timesteps}_{now}"  # noqa: E501
         if self.trainer.lr is None:
             # scaling law for lr; use 2e-4 for d_sae = 2**14
             # from Figure 3 in https://arxiv.org/pdf/2406.04093
@@ -373,7 +477,7 @@ class SAEInterventionConfig(Serializable):
     """Hugging Face model ID"""
 
     sae_path: str = (
-        "../../../checkpoints/TopKSAE_dsae-5120_20250429_192504/step_48829"
+        "../../../checkpoints/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
     )
     """Path to SAE model"""
 
@@ -392,10 +496,11 @@ class SAEInterventionConfig(Serializable):
     strength
     """
 
-    intervention_mode: Literal["grid", "trajectory"] = "grid"
+    intervention_mode: Literal["grid", "trajectory", "topk_trace"] = "grid"
     """
     Whether to generate grid of interventions with different intervention
-    strengths or analyzing intervention over time
+    strengths, analyzing intervention over time or tracking highest
+    activating features over time.
     """
 
     intervention_values: List[float] = field(
@@ -427,6 +532,9 @@ class SAEInterventionConfig(Serializable):
     trajectory/ reconstruction mode
     """
 
+    prompts: Optional[List[str]] = None
+    """Prompt to use for generation instead of dataset"""
+
     # -------------------------------------------------------------------------
     # Diffusion model configuration
     # -------------------------------------------------------------------------
@@ -438,6 +546,9 @@ class SAEInterventionConfig(Serializable):
 
     torch_dtype: Literal["float16", "float32"] = "float32"
     """Torch data type"""
+
+    topk_trace_k: int = 10
+    """Number of highest activating features to track over time"""
 
     def __post_init__(self) -> None:
         if self.timestep_values and self.intervention_mode == "grid":
