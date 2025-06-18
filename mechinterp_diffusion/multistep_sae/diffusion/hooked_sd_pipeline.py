@@ -11,6 +11,8 @@ Changes made to original code:
  - created HookedStableDiffusionXLPipeline class to work with SDXL Pipeline
  - comments to structure code
  - automatic formatting and ruff conformance
+ - added option to early stop denoising loop in case only interested in
+    few late timesteps
 """
 
 # =========================================================================== #
@@ -408,7 +410,17 @@ class HookedDiffusionAbstractPipeline:
 
         guidance_rescale = kwargs.get("guidance_rescale", 0.0)
 
-        for _, t in enumerate(timesteps):
+        # Early stopping:
+        max_denoising_steps = kwargs.get("max_denoising_steps", None)
+
+        for step_idx, t in enumerate(timesteps):
+            # Early stopping condition:
+            if (
+                max_denoising_steps is not None
+                and step_idx >= max_denoising_steps
+            ):
+                break
+
             # expand the latents if we are doing classifier free guidance
             latent_model_input = (
                 torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
@@ -955,6 +967,9 @@ class HookedDiffusionAbstractPipeline:
             timesteps = timesteps[:num_inference_steps]
             self._num_timesteps = len(timesteps)
 
+        # Early stopping:
+        max_denoising_steps = kwargs.get("max_denoising_steps", None)
+
         # Get SDXL specific guidance rescale parameter:
         guidance_rescale = kwargs.get("guidance_rescale", 0.0)
         # 9. Optionally get Guidance Scale Embedding
@@ -968,7 +983,14 @@ class HookedDiffusionAbstractPipeline:
                 embedding_dim=self.unet.config.time_cond_proj_dim,
             ).to(device=latents.device, dtype=latents.dtype)
 
-        for _, t in enumerate(timesteps):
+        for step_idx, t in enumerate(timesteps):
+            # Early stopping condition:
+            if (
+                max_denoising_steps is not None
+                and step_idx >= max_denoising_steps
+            ):
+                break
+
             # expand the latents if we are doing classifier free guidance
             latent_model_input = (
                 torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
