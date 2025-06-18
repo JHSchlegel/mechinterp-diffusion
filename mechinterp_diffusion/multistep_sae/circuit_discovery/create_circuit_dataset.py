@@ -3,6 +3,7 @@ Script to create prompt dataset for sparse feature circuit discovery.
 """
 
 import itertools
+import os
 
 # =========================================================================== #
 #                             Packages and Presets                            #
@@ -95,9 +96,8 @@ def main():
         "--save_path",
         type=str,
         default=str(
-            Path(__file__).resolve().parent.parent
-            / "data"
-            / "birds_vs_cats_dataset"
+            Path(__file__).resolve().parent.parent.parent.parent
+            / "data/birds_vs_cats_dataset"
         ),
         help="Path to save dataset. Defaults to 'data/birds_vs_cats_dataset'.",
     )
@@ -116,7 +116,7 @@ def create_dataset(
     test_size: int = 500,
     seed: int = 42,
     save_path: str = str(
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent.parent.parent
         / "data"
         / "birds_vs_cats_dataset"
     ),
@@ -178,7 +178,7 @@ def create_dataset(
             "test": test_dataset,
         }
     )
-
+    os.makedirs(save_path, exist_ok=True)
     dataset.save_to_disk(save_path)
 
     return dataset
