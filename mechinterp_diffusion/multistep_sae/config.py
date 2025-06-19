@@ -10,8 +10,9 @@ diffusion models and training sparse autoencoders on these representations.
 import datetime
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Optional, Union
 
+from hydra.core.config_store import ConfigStore
 from simple_parsing import Serializable
 
 # =========================================================================== #
@@ -24,7 +25,7 @@ from simple_parsing import Serializable
 # -----------------------------------------------------------------------------
 @dataclass
 class BaseSAEConfig(Serializable):
-    dtype: Literal["float32", "float16"] = "float32"
+    dtype: str = "float32"
     """
     Data type to use for the model weights. One of ['float16', 'float32']
     """
@@ -111,106 +112,6 @@ class TopKSAEConfig(BaseSAEConfig):
     """
 
 
-# -----------------------------------------------------------------------------
-# Crosscoder
-# -----------------------------------------------------------------------------
-@dataclass
-class CrosscoderConfig(Serializable):
-    """Configuration for Sparse Crosscoder.
-
-    The Crosscoder is designed to analyze feature overlap between different
-    groups (e.g., early vs late timesteps). It uses separate encoders for
-    each group but shares a common latent space.
-    """
-
-    # ---------------------------------------------------------------------
-    # Model Architecture Parameters
-    # ---------------------------------------------------------------------
-    d_in: int = 1280
-    """Input dimension (activation vector size)."""
-
-    d_sae: int = 5120
-    """SAE hidden dimension (number of features)."""
-
-    n_groups: int = 2
-    """Number of groups (currently only 2 is supported)."""
-
-    # ---------------------------------------------------------------------
-    # Group Definition Parameters
-    # ---------------------------------------------------------------------
-    early_timesteps: List[int] = field(default_factory=lambda: [961])
-    """Timestep indices that belong to the 'early' group."""
-
-    late_timesteps: List[int] = field(default_factory=lambda: [0])
-    """Timestep indices that belong to the 'late' group."""
-
-    # ---------------------------------------------------------------------
-    # Sparsity Parameters
-    # ---------------------------------------------------------------------
-    k: int = 10
-    """Number of active features (if use_topk=True)."""
-
-    l1_loss_weight: float = 1e-3
-    """Weight for L1 sparsity penalty."""
-
-    use_l1_of_norms: bool = True
-    """Whether to use L1-of-norms loss (scales sparsity by decoder norms)."""
-
-    use_batch_topk: bool = False
-    """Whether to use batchwise topk"""
-
-    # ---------------------------------------------------------------------
-    # Auxiliary Loss Parameters
-    # ---------------------------------------------------------------------
-    use_aux_loss: bool = True
-    """Whether to use auxiliary loss for dead features."""
-
-    k_aux: int = 256
-    """Number of features to use in auxiliary loss."""
-
-    auxk_loss_weight: float = 1.0
-    """Weight for auxiliary loss."""
-
-    num_tokens_dead_threshold: int = 10_000_000
-    """Number of tokens after which a feature is considered dead."""
-
-    # ---------------------------------------------------------------------
-    # Training Parameters
-    # ---------------------------------------------------------------------
-    normalize_decoder: bool = True
-    """Whether to normalize decoder columns to unit norm."""
-
-    standardize_input: bool = False
-    """Whether to standardize inputs to zero mean and unit variance."""
-
-    # ---------------------------------------------------------------------
-    # Device and Precision
-    # ---------------------------------------------------------------------
-    device: str = "cuda"
-    """Device to use for training."""
-
-    dtype: str = "float32"
-    """Data type for model parameters."""
-
-    def __post_init__(self) -> None:
-        """Validate configuration after initialization."""
-        assert self.d_in > 0, "d_in must be positive"
-        assert self.d_sae > 0, "d_sae must be positive"
-        assert self.n_groups == 2, "Only 2 groups currently supported"
-        assert (
-            len(self.early_timesteps) > 0
-        ), "early_timesteps must be non-empty"
-        assert len(self.late_timesteps) > 0, "late_timesteps must be non-empty"
-
-        # Check for overlap between early and late timesteps
-        early_set = set(self.early_timesteps)
-        late_set = set(self.late_timesteps)
-        overlap = early_set & late_set
-        assert (
-            len(overlap) == 0
-        ), f"Timesteps cannot be in both groups: {overlap}"
-
-
 # =========================================================================== #
 #                          Latents Extraction Configuration                   #
 # =========================================================================== #
@@ -224,12 +125,23 @@ class LatentsExtractionConfig(Serializable):
     extracted_latents_path: Union[str, None] = None
     """Where to save the extracted latent activations."""
 
-    dataset_name: Literal["laion", "flickr30k"] = "laion"
+    # Mode selection
+    extraction_mode: str = "sae_training"
+    """
+    Mode for latent extraction:
+    - 'sae_training': Full denoising, single seed, large dataset (default)
+    - 'circuit_analysis': Early timesteps only, labeled data
+    """
+
+    dataset_name: str = "laion"
     """
     Name of huggingface prompt dataset to use for extracting the latent
-    activations. Must be one of ['laion', 'flickr30k']. For 'laion', the
-    guangyil/laion-coco-aestheticlaion-coco-aesthetic dataset is used.
+    activations. Must be one of ['laion', 'flickr30k', 'birds_vs_cats'].
+    For 'laion', the guangyil/laion-coco-aestheticlaion-coco-aesthetic dataset
+        is used.
     For 'flickr30k', the flickr30k dataset is used.
+    For 'birds_vs_cats', a local dataset for comparing birds vs cats images
+        is used.
     """
 
     dataset_split: str = "train"
@@ -266,12 +178,6 @@ class LatentsExtractionConfig(Serializable):
     batch_size: int = 64
     """Number of prompts to process in parallel during latents extraction."""
 
-    extract_every_n_timesteps: int = 1
-    """
-    How frequently to save the extracted latent activations during diffusion
-    process.
-    """
-
     guidance_scale: float = 9.0
     """Scale for classifier-free guidance during diffusion process."""
 
@@ -292,20 +198,49 @@ class LatentsExtractionConfig(Serializable):
     guidance_scale > 1.0
     """
 
+    target_timesteps_idx: List[int] = field(
+        default=list(range(num_inference_steps))
+    )
+    """
+    Target timesteps to cache. By default, all timesteps from 0 to
+    num_inference_steps - 1 are cached. Note that indices are 0-based and index
+    0 is the latest diffusion timestep i.e. t=1/ pure noise; and index
+    num_inference_steps - 1 is the earliest diffusion timestep i.e. t=0
+    """
+
     def __post_init__(self):
+        # Sort to allow for easy extraction of
+        self.target_timesteps_idx = sorted(self.target_timesteps_idx)
         if isinstance(self.hook_names, str):
             self.hook_names = [self.hook_names]
 
-        if self.extracted_latents_path is None:
-            self.extracted_latents_path = os.path.join(
-                "../../../activations",
-                self.model_name.split("/")[-1],
-                self.dataset_name.split("/")[-1],
-                self.dataset_split,
-                f"subset_size-{str(self.dataset_size)}",
-                f"{self.num_inference_steps}-inference-steps",
-                f"every-{self.extract_every_n_timesteps}-steps",
+        if self.target_timesteps_idx == list(range(self.num_inference_steps)):
+            step_name = "every-1-steps"
+        else:
+            step_name = (
+                f"timesteps-{'_'.join(map(str, self.target_timesteps_idx))}"
             )
+
+        if self.extracted_latents_path is None:
+            if self.extraction_mode == "sae_training":
+                self.extracted_latents_path = os.path.join(
+                    "../../../data/activations",
+                    self.model_name.split("/")[-1],
+                    self.dataset_name.split("/")[-1],
+                    self.dataset_split,
+                    f"subset_size-{str(self.dataset_size)}",
+                    f"{self.num_inference_steps}-inference-steps",
+                    f"{step_name}",
+                )
+            else:  # circuit_analysis
+                self.extracted_latents_path = os.path.join(
+                    "../../../data/probe_latents",
+                    self.model_name.split("/")[-1],
+                    self.dataset_name.split("/")[-1],
+                    self.dataset_split,
+                    f"subset_size-{str(self.dataset_size)}",
+                    f"max_timestep-{self.target_timesteps_idx[-1]}",
+                )
 
 
 # =========================================================================== #
@@ -425,7 +360,7 @@ class TrainerConfig(Serializable):
 class TrainingConfig(Serializable):
     """Main configuration combining SAE and Trainer settings."""
 
-    sae: Union[TopKSAEConfig] = field(default=None)
+    sae: Union[TopKSAEConfig] = field(default_factory=TopKSAEConfig)
     """Specific SAE model configuration."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -484,7 +419,7 @@ class SAEInterventionConfig(Serializable):
     target_module: str = "unet.down_blocks.2.attentions.0"
     """Module to apply intervention to"""
 
-    hook_type: Literal["add", "scale", "reconstruct"] = "add"
+    hook_type: str = "add"
     """Type of hook to apply"""
 
     timesteps: List[int] = field(default_factory=lambda: [])
@@ -496,7 +431,7 @@ class SAEInterventionConfig(Serializable):
     strength
     """
 
-    intervention_mode: Literal["grid", "trajectory", "topk_trace"] = "grid"
+    intervention_mode: str = "grid"
     """
     Whether to generate grid of interventions with different intervention
     strengths, analyzing intervention over time or tracking highest
@@ -544,7 +479,7 @@ class SAEInterventionConfig(Serializable):
     guidance_scale: float = 9.0
     """Guidance scale for classifier-free guidance"""
 
-    torch_dtype: Literal["float16", "float32"] = "float32"
+    torch_dtype: str = "float32"
     """Torch data type"""
 
     topk_trace_k: int = 10
@@ -572,3 +507,48 @@ class SAEInterventionConfig(Serializable):
             raise ValueError(
                 "Specify either 'timesteps' or 'timestep_values', not both."
             )
+
+
+# =========================================================================== #
+#                        Ablation Study Configuration                         #
+# =========================================================================== #
+@dataclass
+class AblationConfig:
+    """Configuration for ablation studies with Hydra."""
+
+    # SAE and trainer configs will be populated by Hydra
+    sae: TopKSAEConfig = field(default_factory=TopKSAEConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+
+    # Experiment settings
+    sae_type: str = "topk"
+    seed: int = 42
+    num_eval_samples: int = 10000
+
+    # Dataset paths
+    train_dataset: str = (
+        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+    )
+    test_dataset: str = (
+        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+    )
+
+    # Output directory
+    output_dir: str = "/media/Thesis/mechinterp-diffusion/results/ablation"
+
+
+# =========================================================================== #
+#                    Hydra Config Store Registration                          #
+# =========================================================================== #
+
+# Create a config store instance
+cs = ConfigStore.instance()
+
+# Register SAE configs
+cs.store(name="topk", node=TopKSAEConfig, group="sae")
+
+# Register trainer config
+cs.store(name="base_trainer", node=TrainerConfig, group="trainer")
+
+# Register ablation config
+cs.store(name="ablation", node=AblationConfig)
