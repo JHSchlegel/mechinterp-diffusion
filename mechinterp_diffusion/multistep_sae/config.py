@@ -190,17 +190,20 @@ class LatentsExtractionConfig(Serializable):
     guidance_scale > 1.0
     """
 
-    target_timesteps_idx: List[int] = field(
-        default=list(range(num_inference_steps))
+    target_timesteps_idx: Optional[List[int]] = field(
+        default=None,
     )
     """
     Target timesteps to cache. By default, all timesteps from 0 to
     num_inference_steps - 1 are cached. Note that indices are 0-based and index
-    0 is the latest diffusion timestep i.e. t=1/ pure noise; and index
+    0 is the latest diffusion timestep i.e. t=1 resp. pure noise; and index
     num_inference_steps - 1 is the earliest diffusion timestep i.e. t=0
     """
 
     def __post_init__(self):
+        if self.target_timesteps_idx is None:
+            # Default to all timesteps
+            self.target_timesteps_idx = list(range(self.num_inference_steps))
         # Sort to allow for easy extraction of
         self.target_timesteps_idx = sorted(self.target_timesteps_idx)
         if isinstance(self.hook_names, str):
@@ -214,25 +217,15 @@ class LatentsExtractionConfig(Serializable):
             )
 
         if self.extracted_latents_path is None:
-            if self.extraction_mode == "sae_training":
-                self.extracted_latents_path = os.path.join(
-                    "../../../data/activations",
-                    self.model_name.split("/")[-1],
-                    self.dataset_name.split("/")[-1],
-                    self.dataset_split,
-                    f"subset_size-{str(self.dataset_size)}",
-                    f"{self.num_inference_steps}-inference-steps",
-                    f"{step_name}",
-                )
-            else:  # circuit_analysis
-                self.extracted_latents_path = os.path.join(
-                    "../../../data/probe_latents",
-                    self.model_name.split("/")[-1],
-                    self.dataset_name.split("/")[-1],
-                    self.dataset_split,
-                    f"subset_size-{str(self.dataset_size)}",
-                    f"max_timestep-{self.target_timesteps_idx[-1]}",
-                )
+            self.extracted_latents_path = os.path.join(
+                "../../../data/activations",
+                self.model_name.split("/")[-1],
+                self.dataset_name.split("/")[-1],
+                self.dataset_split,
+                f"subset_size-{str(self.dataset_size)}",
+                f"{self.num_inference_steps}-inference-steps",
+                f"{step_name}",
+            )
 
 
 # =========================================================================== #
