@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+import matplotlib.pyplot as plt
 import torch
 from datasets import load_from_disk
 from safetensors.torch import load_file, save_file
@@ -79,12 +80,20 @@ def main() -> None:
         n_hidden_channels=64,
         device=config.device,
     )
+
     accuracy = test_probe(trained_probe, val_loader, device=config.device)
     print(f"Validation Accuracy: {accuracy:.4f}")
     save_file(
         trained_probe.state_dict(),
         config.save_path,
     )
+
+    plt.plot(loss_history)
+    plt.xlabel("Batch")
+    plt.ylabel("Loss")
+    plt.title("Training Loss History")
+    plt.grid()
+    plt.show()
 
     # test whether the model can be loaded correctly
     loaded_probe = LatentProbe(
