@@ -125,14 +125,6 @@ class LatentsExtractionConfig(Serializable):
     extracted_latents_path: Union[str, None] = None
     """Where to save the extracted latent activations."""
 
-    # Mode selection
-    extraction_mode: str = "sae_training"
-    """
-    Mode for latent extraction:
-    - 'sae_training': Full denoising, single seed, large dataset (default)
-    - 'circuit_analysis': Early timesteps only, labeled data
-    """
-
     dataset_name: str = "laion"
     """
     Name of huggingface prompt dataset to use for extracting the latent
