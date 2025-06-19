@@ -10,8 +10,9 @@ diffusion models and training sparse autoencoders on these representations.
 import datetime
 import os
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Union
+from typing import Dict, List, Optional, Union
 
+from hydra.core.config_store import ConfigStore
 from simple_parsing import Serializable
 
 # =========================================================================== #
@@ -24,7 +25,7 @@ from simple_parsing import Serializable
 # -----------------------------------------------------------------------------
 @dataclass
 class BaseSAEConfig(Serializable):
-    dtype: Literal["float32", "float16"] = "float32"
+    dtype: str = "float32"
     """
     Data type to use for the model weights. One of ['float16', 'float32']
     """
@@ -51,9 +52,9 @@ class BaseSAEConfig(Serializable):
     encoding. If True, also undo standardization after decoding.
     """
 
-    num_batches_dead_threshold: int = 5
+    num_tokens_dead_threshold: int = 10_000_000
     """
-    Number of batches/steps without activation to consider a feature dead.
+    Number of tokens/samples without activation to consider a feature dead.
     """
 
     def __post_init__(self):
@@ -84,7 +85,7 @@ class TopKSAEConfig(BaseSAEConfig):
     How many topk dead features to use for auxiliary loss term.
     """
 
-    auxk_loss_weight: float = 1 / 32
+    auxk_loss_weight: float = 1 / 32  #  0.1
     """
     Weight for the auxiliary loss term in the TopK architecture.
     """
@@ -94,7 +95,7 @@ class TopKSAEConfig(BaseSAEConfig):
     Weight for the L1 loss term in the TopK architecture.
     """
 
-    use_batch_topk: bool = True
+    use_batch_topk: bool = False
     """
     Whether to use Batch-TopK SAE
     """
@@ -111,14 +112,6 @@ class TopKSAEConfig(BaseSAEConfig):
     """
 
 
-# -----------------------------------------------------------------------------
-# Jump ReLU
-# -----------------------------------------------------------------------------
-@dataclass
-class JumpReLUConfig(BaseSAEConfig):
-    threshold = 0.0
-
-
 # =========================================================================== #
 #                          Latents Extraction Configuration                   #
 # =========================================================================== #
@@ -132,12 +125,15 @@ class LatentsExtractionConfig(Serializable):
     extracted_latents_path: Union[str, None] = None
     """Where to save the extracted latent activations."""
 
-    dataset_name: str = "flickr30k"
+    dataset_name: str = "laion"
     """
     Name of huggingface prompt dataset to use for extracting the latent
-    activations. Must be one of ['laion', 'flickr30k']. For 'laion', the
-    guangyil/laion-coco-aestheticlaion-coco-aesthetic dataset is used.
+    activations. Must be one of ['laion', 'flickr30k', 'birds_vs_cats'].
+    For 'laion', the guangyil/laion-coco-aestheticlaion-coco-aesthetic dataset
+        is used.
     For 'flickr30k', the flickr30k dataset is used.
+    For 'birds_vs_cats', a local dataset for comparing birds vs cats images
+        is used.
     """
 
     dataset_split: str = "train"
@@ -174,12 +170,6 @@ class LatentsExtractionConfig(Serializable):
     batch_size: int = 64
     """Number of prompts to process in parallel during latents extraction."""
 
-    extract_every_n_timesteps: int = 1
-    """
-    How frequently to save the extracted latent activations during diffusion
-    process.
-    """
-
     guidance_scale: float = 9.0
     """Scale for classifier-free guidance during diffusion process."""
 
@@ -200,19 +190,41 @@ class LatentsExtractionConfig(Serializable):
     guidance_scale > 1.0
     """
 
+    target_timesteps_idx: Optional[List[int]] = field(
+        default=None,
+    )
+    """
+    Target timesteps to cache. By default, all timesteps from 0 to
+    num_inference_steps - 1 are cached. Note that indices are 0-based and index
+    0 is the latest diffusion timestep i.e. t=1 resp. pure noise; and index
+    num_inference_steps - 1 is the earliest diffusion timestep i.e. t=0
+    """
+
     def __post_init__(self):
+        if self.target_timesteps_idx is None:
+            # Default to all timesteps
+            self.target_timesteps_idx = list(range(self.num_inference_steps))
+        # Sort to allow for easy extraction of
+        self.target_timesteps_idx = sorted(self.target_timesteps_idx)
         if isinstance(self.hook_names, str):
             self.hook_names = [self.hook_names]
 
+        if self.target_timesteps_idx == list(range(self.num_inference_steps)):
+            step_name = "every-1-steps"
+        else:
+            step_name = (
+                f"timesteps-{'_'.join(map(str, self.target_timesteps_idx))}"
+            )
+
         if self.extracted_latents_path is None:
             self.extracted_latents_path = os.path.join(
-                "../../../activations",
+                "../../../data/activations",
                 self.model_name.split("/")[-1],
                 self.dataset_name.split("/")[-1],
                 self.dataset_split,
                 f"subset_size-{str(self.dataset_size)}",
                 f"{self.num_inference_steps}-inference-steps",
-                f"every-{self.extract_every_n_timesteps}-steps",
+                f"{step_name}",
             )
 
 
@@ -224,33 +236,39 @@ class TrainerConfig(Serializable):
     """Configuration settings for the SAE Trainer."""
 
     # -------------------------------------------------------------------------
-    # General settings
+    # Dataloading settings
     # -------------------------------------------------------------------------
     dataset_path: str = (
-        "../../../activations/stable-diffusion-2-1/flickr30k/train/subset_size-40000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "../../../activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the directory containing the activation dataset."""
 
     seed: int = 42
     """Random seed for reproducibility."""
 
+    buffer_size: int = 50
+    """
+    Number of examples to buffer at once for dataloading.
+    """
+
     # -------------------------------------------------------------------------
     # Training settings
     # -------------------------------------------------------------------------
 
-    lr: float = 3e-4
-    """Learning rate for the optimizer."""
+    lr: float | None = None
+    """
+    Learning rate for the optimizer. If None, scaling laws are used based on
+    d_sae.
+    """
 
-    batch_size: int = 256
+    effective_batch_size: int = 4096
     """Number of activation vectors per training batch."""
 
-    num_epochs: int = 1
-    """Number of epochs to train for."""
-
-    total_training_steps: int | None = None
+    num_tokens: int = int(2e9)
     """
-    Overwrite the total number of training steps. If None, defaults to
-    (dataset_size // batch_size) * num_epochs.
+    Number of tokens to process during training. This is the number of
+    activation vectors to process, not the number of training steps. The number
+    of training steps is approximately to num_tokens // effective_batch_size.
     """
 
     target_timesteps: Optional[List[int]] = None
@@ -259,14 +277,27 @@ class TrainerConfig(Serializable):
     timesteps in the dataset.
     """
 
-    warmup_steps: int = 500
-    """Number of learning rate warmup steps."""
+    lr_scheduler_type: str = "constant"
+    """
+    Type of learning rate scheduler to use. See Hugging Face documentation for
+    more details:
+    https://huggingface.co/docs/transformers/en/main_classes/optimizer_schedules
 
-    decay_steps: Optional[int] = None
+    Scheduler types:
+    - “linear” = get_linear_schedule_with_warmup
+    - “cosine” = get_cosine_schedule_with_warmup
+    - “cosine_with_restarts”=get_cosine_with_hard_restarts_schedule_with_warmup
+    - “polynomial” = get_polynomial_decay_schedule_with_warmup
+    - “constant” = get_constant_schedule
+    - “constant_with_warmup” = get_constant_schedule_with_warmup
+    - “inverse_sqrt” = get_inverse_sqrt_schedule
+    - “reduce_lr_on_plateau” = get_reduce_on_plateau_schedule
+    - “cosine_with_min_lr” = get_cosine_with_min_lr_schedule_with_warmup
+    - “warmup_stable_decay” = get_wsd_schedule
     """
-    Number of learning rate decay steps. If None, defaults to total steps minus
-    warmup steps.
-    """
+
+    warmup_steps: int = 0
+    """Number of learning rate warmup steps."""
 
     adam_beta1: float = 0.9
     """Adam optimizer beta1."""
@@ -297,10 +328,10 @@ class TrainerConfig(Serializable):
     log_frequency: int = 1
     """Log metrics to wandb every N steps."""
 
-    plot_frequency: int = 10
-    """Generate and log plots to wandb every N steps."""
+    plot_frequency: int = 50_000
+    """Generate every N steps."""
 
-    save_frequency: int = 200
+    save_frequency: int = 50_000
     """Save model checkpoint every N steps."""
 
     checkpoint_path: str = "../../../checkpoints"
@@ -314,17 +345,195 @@ class TrainerConfig(Serializable):
 class TrainingConfig(Serializable):
     """Main configuration combining SAE and Trainer settings."""
 
-    sae: Union[TopKSAEConfig, JumpReLUConfig] = field(default=None)
+    sae: Union[TopKSAEConfig] = field(default_factory=TopKSAEConfig)
     """Specific SAE model configuration."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     """Trainer configuration settings."""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.trainer.wandb_run_name is None:
             now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
             sae_type = type(self.sae).__name__.replace("Config", "")
-            self.trainer.wandb_run_name = (
-                f"{sae_type}_dsae-{self.sae.d_sae}_{now}"
+            timesteps = (
+                str(self.trainer.target_timesteps)
+                if self.trainer.target_timesteps
+                else "all"
             )
+            if self.sae.use_batch_topk:
+                sae_name = "BatchTopKSAE"
+            else:
+                sae_name = sae_type
+            self.trainer.wandb_run_name = f"{sae_name}_dsae-{self.sae.d_sae}_timesteps-{timesteps}_{now}"  # noqa: E501
+        if self.trainer.lr is None:
+            # scaling law for lr; use 2e-4 for d_sae = 2**14
+            # from Figure 3 in https://arxiv.org/pdf/2406.04093
+            self.trainer.lr = 2e-4 / (self.sae.d_sae / (2 << 13)) ** 0.5
+
+
+# =========================================================================== #
+#                       SAE Intervention Configuration                        #
+# =========================================================================== #
+@dataclass
+class SAEInterventionConfig(Serializable):
+    """
+    Configuration for SAE-based feature interventions in diffusion models.
+    """
+
+    output_dir: str = "../../../intervention_outputs"
+    """Directory to save outputs"""
+
+    height: int = 512
+    """Height of the generated images"""
+
+    width: int = 512
+    """Width of the generated images"""
+
+    seed: int = 42
+    """Random seed for reproducibility"""
+
+    model_id: str = "stabilityai/stable-diffusion-2-1"
+    """Hugging Face model ID"""
+
+    sae_path: str = (
+        "../../../checkpoints/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
+    )
+    """Path to SAE model"""
+
+    target_module: str = "unet.down_blocks.2.attentions.0"
+    """Module to apply intervention to"""
+
+    hook_type: str = "add"
+    """Type of hook to apply"""
+
+    timesteps: List[int] = field(default_factory=lambda: [])
+    """Space-separated list of timesteps to intervene at"""
+
+    timestep_values: Dict[int, float] = field(default_factory=dict)
+    """
+    Space separated list of 'timestep=value' pairs for varying intervention
+    strength
+    """
+
+    intervention_mode: str = "grid"
+    """
+    Whether to generate grid of interventions with different intervention
+    strengths, analyzing intervention over time or tracking highest
+    activating features over time.
+    """
+
+    intervention_values: List[float] = field(
+        default_factory=lambda: [-20.0, -10.0, 10.0, 20.0]
+    )
+    """List of values for intervention strength"""
+
+    features: List[int] = field(default_factory=lambda: [0])
+    """List of feature indices to intervene on"""
+
+    dataset_path: str = "../../../laion-coco_captions"
+    """Path to HuggingFace prompt dataset"""
+
+    dataset_split: str = "test"
+    """Dataset split to use"""
+
+    num_prompts: int = 5
+    """Number of prompts to process"""
+
+    prompt_column: str = "caption"
+    """Column name containing prompts"""
+
+    capture_interval: int = 5
+    """Interval for capturing intermediate diffusion steps"""
+
+    save_activation_heatmap: bool = False
+    """
+    Whether to save heatmap of activations over time in
+    trajectory/ reconstruction mode
+    """
+
+    prompts: Optional[List[str]] = None
+    """Prompt to use for generation instead of dataset"""
+
+    # -------------------------------------------------------------------------
+    # Diffusion model configuration
+    # -------------------------------------------------------------------------
+    num_inference_steps: int = 25
+    """Number of inference steps for the diffusion process"""
+
+    guidance_scale: float = 9.0
+    """Guidance scale for classifier-free guidance"""
+
+    torch_dtype: str = "float32"
+    """Torch data type"""
+
+    topk_trace_k: int = 10
+    """Number of highest activating features to track over time"""
+
+    def __post_init__(self) -> None:
+        if self.timestep_values and self.intervention_mode == "grid":
+            raise NotImplementedError(
+                "Different intervention strenghts across timesteps are not "
+                "supported for grid intervention mode."
+            )
+
+        if (self.intervention_mode == "trajectory") and len(
+            self.intervention_values
+        ) > 1:
+            raise NotImplementedError(
+                "Multiple intervention values are not supported for "
+                "trajectory intervention and reconstruction mode."
+            )
+
+        if self.intervention_mode == "reconstruct":
+            self.intervention_values = [0.0]
+
+        if self.timestep_values and self.timesteps:
+            raise ValueError(
+                "Specify either 'timesteps' or 'timestep_values', not both."
+            )
+
+
+# =========================================================================== #
+#                        Ablation Study Configuration                         #
+# =========================================================================== #
+@dataclass
+class AblationConfig:
+    """Configuration for ablation studies with Hydra."""
+
+    # SAE and trainer configs will be populated by Hydra
+    sae: TopKSAEConfig = field(default_factory=TopKSAEConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+
+    # Experiment settings
+    sae_type: str = "topk"
+    seed: int = 42
+    num_eval_samples: int = 10000
+
+    # Dataset paths
+    train_dataset: str = (
+        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+    )
+    test_dataset: str = (
+        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+    )
+
+    # Output directory
+    output_dir: str = "/media/Thesis/mechinterp-diffusion/results/ablation"
+
+
+# =========================================================================== #
+#                    Hydra Config Store Registration                          #
+# =========================================================================== #
+
+# Create a config store instance
+cs = ConfigStore.instance()
+
+# Register SAE configs
+cs.store(name="topk", node=TopKSAEConfig, group="sae")
+
+# Register trainer config
+cs.store(name="base_trainer", node=TrainerConfig, group="trainer")
+
+# Register ablation config
+cs.store(name="ablation", node=AblationConfig)

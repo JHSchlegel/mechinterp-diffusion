@@ -28,13 +28,11 @@ def main() -> None:
             seed=args.seed,
         )
     elif args.dataset_name == "laion":
-        raise NotImplementedError(
-            "Sampling from LAION dataset is not implemented yet."
-        )
-    else:
-        raise ValueError(
-            f"Unknown dataset name: {args.dataset_name}. "
-            "Please choose from ['flickr30k', 'laion']."
+        sample_laion_captions(
+            num_train_samples=args.num_train_samples,
+            num_test_samples=args.num_test_samples,
+            output_dir=args.output_dir,
+            seed=args.seed,
         )
 
 
@@ -47,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default="flickr30k",
+        default="laion",
         choices=["flickr30k", "laion"],
         help="Name of the dataset to sample from.",
     )
@@ -68,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="../../../flickr30k_captions",
+        default="../../../laion-coco_captions",
         help="Directory to save the split dataset.",
     )
     parser.add_argument(
@@ -179,6 +177,73 @@ def sample_flickr30k_captions(
     for i in range(5):
         print(f"Train: {train_captions[i]['caption']}")
         print(f"Test: {test_captions[i]['caption']}")
+
+
+# -----------------------------------------------------------------------------
+# Function to sample and save Laion-coco captions
+# -----------------------------------------------------------------------------
+def sample_laion_captions(
+    num_train_samples: int = 200_000,
+    num_test_samples: int = 50_000,
+    output_dir: str = "../../../laion-coco_captions",
+    seed: int = 42,
+) -> None:
+    """Create disjoint train and test sets from Laion-Coco captions
+    and save them to disk in HuggingFace format.
+
+    Args:
+        num_train_samples (int, optional): Size of train set.
+            Defaults to 100_000.
+        num_test_samples (int, optional): Size of test set.
+            Defaults to 50_000.
+        output_dir (str, optional): Output directory for dataset.
+            Defaults to "../../../laion-coco_captions".
+        seed (int, optional): Seed for reproducibility. Defaults to 42.
+    """
+    dataset = load_dataset(
+        "guangyil/laion-coco-aesthetic",
+        split="train",
+        columns=["caption"],
+        streaming=True,
+    ).shuffle(seed=seed)
+
+    train_dataset = list(dataset.take(num_train_samples))
+    train_dataset = Dataset.from_dict(
+        {"caption": [item["caption"] for item in train_dataset]}
+    )
+    test_dataset = list(dataset.skip(num_train_samples).take(num_test_samples))
+    test_dataset = Dataset.from_dict(
+        {"caption": [item["caption"] for item in test_dataset]}
+    )
+    dataset_dict = DatasetDict(
+        {
+            "train": train_dataset,
+            "test": test_dataset,
+        }
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    # save in  huggingface format:
+    dataset_dict.save_to_disk(output_dir)
+    print(f"Dataset saved to: {output_dir}")
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Test samples: {len(test_dataset)}")
+
+    train_csv_path = os.path.join(output_dir, "train.csv")
+    test_csv_path = os.path.join(output_dir, "test.csv")
+    pd.DataFrame(
+        {"caption": [item["caption"] for item in train_dataset]}
+    ).to_csv(train_csv_path, index=False)
+    pd.DataFrame(
+        {"caption": [item["caption"] for item in test_dataset]}
+    ).to_csv(test_csv_path, index=False)
+    print(f"Train captions saved as CSV: {train_csv_path}")
+    print(f"Test captions saved as CSV: {test_csv_path}")
+
+    print("Sample captions:")
+    for i in range(5):
+        print(f"Train: {train_dataset[i]['caption']}")
+        print(f"Test: {test_dataset[i]['caption']}")
 
 
 if __name__ == "__main__":

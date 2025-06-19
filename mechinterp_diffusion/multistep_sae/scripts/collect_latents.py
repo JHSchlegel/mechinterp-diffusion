@@ -11,6 +11,8 @@ Changes made to original code:
  - adapted to work with the new config and dataset structure
  - removed the push_to_hub functionality and adjusted the dataset loading
  - included extensive logging
+ - added support for caching specific timesteps only
+ - added support for saving activations for labeled prompting datasets
 """
 
 # =========================================================================== #
@@ -224,7 +226,8 @@ class CacheActivationsRunner:
         assert self.cfg.dataset_name in [
             "laion",
             "flickr30k",
-        ], "Only laion-coco-aesthetic and flickr30k are supported for now"
+            "birds_vs_cats",
+        ], "Only laion-coco-aesthetic, flickr30k, and birds_vs_cats  supported"
 
         assert self.cfg.dataset_split in [
             "train",
@@ -233,7 +236,17 @@ class CacheActivationsRunner:
 
         if self.cfg.dataset_name == "flickr30k":
             self.dataset = DatasetDict.load_from_disk(
-                "../../../flickr30k_captions"
+                "../../../prompts/flickr30k_captions"
+            )[self.cfg.dataset_split]
+
+        elif self.cfg.dataset_name == "laion":
+            self.dataset = DatasetDict.load_from_disk(
+                "../../../data/prompts/laion-coco_captions"
+            )[self.cfg.dataset_split]
+
+        elif self.cfg.dataset_name == "birds_vs_cats":
+            self.dataset = DatasetDict.load_from_disk(
+                "../../../data/prompts/birds_vs_cats_captions"
             )[self.cfg.dataset_split]
 
         else:
@@ -247,6 +260,10 @@ class CacheActivationsRunner:
         self.dataset = self.dataset.shuffle(seed=self.cfg.seed)
         if self.cfg.dataset_size:
             self.dataset = self.dataset.select(range(self.cfg.dataset_size))
+
+        self.data_has_labels = (
+            True if "label" in self.dataset.column_names else False
+        )
 
     @staticmethod
     def get_batches(items, batch_size):
@@ -393,39 +410,62 @@ class CacheActivationsRunner:
         # buffer shape: "bs num_inference_steps+1 d_sample_size d_in",
         buffer: torch.Tensor,
         hook_name: str,
+        labels: torch.Tensor | None = None,
+        class_names: list[str] | None = None,
     ) -> Dataset:
         batch_size, n_steps, d_sample_size, d_in = buffer.shape
 
         # Filter buffer based on every N steps
-        buffer = buffer[:, :: self.cfg.extract_every_n_timesteps, :, :]
+        buffer = buffer[:, self.cfg.target_timesteps_idx, :, :]
 
         activations = buffer.reshape(-1, d_sample_size, d_in)
         timesteps = self.scheduler_timesteps[
-            :: self.cfg.extract_every_n_timesteps
+            self.cfg.target_timesteps_idx
         ].repeat(batch_size)
 
+        data_dict = {
+            "activations": activations,
+            "timestep": timesteps,
+        }
+
+        assert (
+            self.data_has_labels and labels is not None
+        ), "Labels must be provided if the dataset has labels."
+
+        if self.data_has_labels:
+            n_repeats = len(timesteps) // batch_size
+            data_dict["label"] = [
+                label for label in labels for _ in range(n_repeats)
+            ]
+            data_dict["class_name"] = [
+                name for name in class_names for _ in range(n_repeats)
+            ]
+
         shard = Dataset.from_dict(
-            {
-                "activations": activations,
-                "timestep": timesteps,
-            },
+            data_dict,
             features=self.features_dict[hook_name],
         )
+
         return shard
 
     def create_dataset_feature(self, hook_name, d_in, d_out):
-        self.features_dict[hook_name] = Features(
-            {
-                "activations": Array2D(
-                    shape=(
-                        d_in,
-                        d_out,
-                    ),
-                    dtype=self.cfg.dtype,
+        features = {
+            "activations": Array2D(
+                shape=(
+                    d_in,
+                    d_out,
                 ),
-                "timestep": Value(dtype="uint16"),
-            }
-        )
+                dtype=self.cfg.dtype,
+            ),
+            "timestep": Value(dtype="uint16"),
+        }
+
+        # Add label and class_name if they exist in the dataset
+        if self.data_has_labels:
+            features["label"] = Value(dtype="int64")
+            features["class_name"] = Value(dtype="string")
+
+        self.features_dict[hook_name] = Features(features)
 
     @torch.no_grad()
     def run(self) -> dict[str, Dataset]:
@@ -482,6 +522,8 @@ class CacheActivationsRunner:
         ):
 
             with self.accelerator.split_between_processes(batch) as prompt:
+                labels = prompt.get("label", None)
+                class_names = prompt.get("class_name", None)
                 prompt = prompt[self.cfg.column_name]
 
                 _, acts_cache = self.pipe.run_with_cache(
@@ -497,6 +539,8 @@ class CacheActivationsRunner:
                     height=self.cfg.height,
                     width=self.cfg.width,
                     unconditional=self.cfg.unconditional,
+                    # Don't execute unecessary diffusion steps
+                    max_denoising_steps=self.cfg.target_timesteps_idx[-1] + 1,
                 )
 
             self.accelerator.wait_for_everyone()
@@ -534,7 +578,12 @@ class CacheActivationsRunner:
 
                     logging.info(f"{hook_name=} {gathered_buffer_acts.shape=}")
 
-                    shard = self._create_shard(gathered_buffer_acts, hook_name)
+                    shard = self._create_shard(
+                        gathered_buffer_acts,
+                        hook_name,
+                        labels=labels,
+                        class_names=class_names,
+                    )
                     shard_path = os.path.join(
                         tmp_cached_activation_paths[hook_name],
                         f"shard_{i:05d}",

@@ -5,15 +5,17 @@ Handles the training loop, data loading, optimization, logging, plotting, and
 checkpointing for SAE models.
 """
 
-import gc
-
 # =========================================================================== #
 #                            Packages and Presets                             #
 # =========================================================================== #
+import gc
+import json
 import logging
+import math
 import os
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -23,17 +25,19 @@ import pandas as pd
 import seaborn as sns
 import torch
 from datasets import Dataset
+from geom_median.torch import compute_geometric_median
 from torch import Tensor
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader, Subset
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 from tqdm.auto import tqdm
+from transformers import SchedulerType, get_scheduler
 
 import wandb
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config import TrainerConfig, TrainingConfig
+from utils.activations_iterator import CustomActivationsIterator
 
 from .base_sae import BaseSAE
 
@@ -41,31 +45,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-# Helper function for learning rate scheduling
-def _get_lr_scheduler(
-    optimizer: Adam,
-    warmup_steps: int,
-    total_training_steps: int,
-    decay_steps: Optional[int] = None,
-):
-    """Creates a linear warmup and cosine decay learning rate scheduler."""
-    if decay_steps is None:
-        decay_steps = total_training_steps - warmup_steps
-    assert decay_steps >= 0, "decay_steps must be non-negative"
-
-    def lr_lambda(current_step: int):
-        if current_step < warmup_steps:
-            return float(current_step) / float(max(1, warmup_steps))
-        progress = float(current_step - warmup_steps) / float(
-            max(1, decay_steps)
-        )
-        return max(
-            0.0, 0.5 * (1.0 + torch.cos(torch.tensor(progress * torch.pi)))
-        )
-
-    return LambdaLR(optimizer, lr_lambda)
 
 
 # =========================================================================== #
@@ -80,7 +59,7 @@ class SAETrainer:
         sae_model: BaseSAE,
         dataset: Dataset,
         optimizer: Optional[Adam] = None,
-        lr_scheduler: Optional[LambdaLR] = None,
+        lr_scheduler: Optional[LRScheduler | SchedulerType] = None,
     ) -> None:
         """Initializes the SAETrainer.
 
@@ -90,8 +69,8 @@ class SAETrainer:
             dataset (Dataset): The dataset containing activation vectors.
             optimizer (Optional[Adam]): The optimizer. If None, Adam is
                 created.
-            lr_scheduler (Optional[LambdaLR]): Learning rate scheduler. If
-                None, one is created based on config.
+            lr_scheduler (Optional[LRScheduler | SchedulerType]): Learning rate
+                scheduler. If None, one is created based on config.
         """
         assert isinstance(
             config, TrainingConfig
@@ -145,26 +124,79 @@ class SAETrainer:
                     "No data found for the specified target_timesteps."
                 )
             logger.info(f"Filtered dataset size: {len(self.train_indices)}")
-            self.train_dataset = Subset(self.dataset, self.train_indices)
+            self.train_dataset = self.dataset.select(self.train_indices)
         else:
             logger.info("Training on all timesteps.")
             self.train_dataset = self.dataset
 
-        self.dataloader = DataLoader(
-            self.train_dataset,
-            batch_size=self.trainer_cfg.batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True if self.device.type == "cuda" else False,
+        self.train_dataset.shuffle(seed=self.trainer_cfg.seed)
+
+        self.dataloader = CustomActivationsIterator(
+            dataset=self.train_dataset,
+            batch_size=self.trainer_cfg.effective_batch_size,
+            total_tokens=self.trainer_cfg.num_tokens,
+            buffer_size=self.trainer_cfg.buffer_size,
         )
+
+        # ---------------------------------------------------------------------
+        # Initialize b_dec and mse_scale from data
+        # ---------------------------------------------------------------------
+        # initialize b_dec using geometric median of first 8 batches:
+        tmp_dataloader = CustomActivationsIterator(
+            dataset=self.train_dataset,
+            batch_size=4096,
+            total_tokens=32768,
+            buffer_size=100,
+        )
+
+        # Temporary sample to calculate initial b_dec and mse scale
+        stats_acts_sample = (
+            torch.cat(
+                [
+                    next(tmp_dataloader.iterate())["activations"].to(
+                        self.device, dtype=self.dtype
+                    )
+                    for _ in range(8)
+                ],
+                dim=0,
+            )
+            .float()
+            .cpu()
+        )
+
+        if config.sae.standardize_input:
+            # standardize the activations
+            stats_acts_sample = (
+                stats_acts_sample - stats_acts_sample.mean(dim=0)
+            ) / (stats_acts_sample.std(dim=0) + 1e-8)
+
+        self.sae_model.mse_scale = (
+            1
+            / (
+                (
+                    stats_acts_sample.float().mean(dim=0)
+                    - stats_acts_sample.float()
+                )
+                ** 2
+            ).mean()
+        ).item()
+
+        self.sae_model.b_dec.data = (
+            compute_geometric_median(stats_acts_sample).median.cuda().float()
+        )
+        del tmp_dataloader, stats_acts_sample
+
+        logging.info(
+            f"b_dec initialized to geometric median of first 32768 samples: "
+            f"{self.sae_model.b_dec.data}"
+        )
+        logging.info(f"mse_scale initialized to: {self.sae_model.mse_scale}")
 
         # ---------------------------------------------------------------------
         # Optimizer and Learning Rate Scheduler
         # ---------------------------------------------------------------------
-        self.total_training_steps = (
-            (len(self.dataloader) * self.trainer_cfg.num_epochs)
-            if not self.trainer_cfg.total_training_steps
-            else self.trainer_cfg.total_training_steps
+        self.total_training_steps: int = math.ceil(
+            self.trainer_cfg.num_tokens / self.trainer_cfg.effective_batch_size
         )
 
         if optimizer is None:
@@ -181,11 +213,11 @@ class SAETrainer:
             self.optimizer = optimizer
 
         if lr_scheduler is None:
-            self.lr_scheduler = _get_lr_scheduler(
-                self.optimizer,
-                self.trainer_cfg.warmup_steps,
-                self.total_training_steps,
-                self.trainer_cfg.decay_steps,
+            self.lr_scheduler = get_scheduler(
+                name=self.trainer_cfg.lr_scheduler_type,
+                optimizer=self.optimizer,
+                num_warmup_steps=self.trainer_cfg.warmup_steps,
+                num_training_steps=self.total_training_steps,
             )
             logger.info("Learning rate scheduler initialized.")
         else:
@@ -201,6 +233,10 @@ class SAETrainer:
         )
         self.checkpoint_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Checkpoints will be saved to: {self.checkpoint_path}")
+
+        with open(self.checkpoint_path / "config.json", "w") as f:
+            json.dump(asdict(config), f, indent=4)
+        logger.info(f"Saved config to: {self.checkpoint_path / 'config.json'}")
 
     def _init_wandb(self) -> None:
         """Initializes Weights & Biases if configured."""
@@ -254,7 +290,7 @@ class SAETrainer:
         self.optimizer.zero_grad()
         loss.backward()
 
-        if self.trainer_cfg.max_grad_norm > 0:
+        if self.trainer_cfg.max_grad_norm:
             torch.nn.utils.clip_grad_norm_(
                 self.sae_model.parameters(), self.trainer_cfg.max_grad_norm
             )
@@ -279,16 +315,11 @@ class SAETrainer:
             feature_acts = sae_output["feature_acts"]
             l0_per_sample = (feature_acts > 0.0).float().sum(dim=-1)
             log_data["l0_per_sample_std"] = l0_per_sample.std().item()
-            log_data["dead_features_in_batch_pct"] = (
-                feature_acts.sum(0) == 0
-            ).float().mean().item() * 100
             # Clean up intermediate tensors
             del feature_acts, l0_per_sample
 
         self.global_step += 1
-        self.total_tokens_processed += (
-            activations.shape[0] * activations.shape[1]
-        )  # (batch * d_spatial)
+        self.total_tokens_processed += activations.shape[0]
 
         # cleanup after step
         del activations, sae_output, loss
@@ -318,15 +349,28 @@ class SAETrainer:
         ) * 6
         try:
             self.sae_model.eval()
-            plot_batch = next(iter(self.dataloader))
-            activations = plot_batch["activations"].to(
-                self.device, dtype=self.dtype
+
+            # get 50k samples for plotting from dataset
+            tmp_loader = CustomActivationsIterator(
+                dataset=self.train_dataset,
+                batch_size=self.trainer_cfg.effective_batch_size,
+                total_tokens=50_000,
+                buffer_size=self.trainer_cfg.buffer_size,
             )
 
             with torch.no_grad():
-                sae_output = self.sae_model(activations)
+                sae_output = torch.cat(
+                    [
+                        self.sae_model(
+                            batch["activations"].to(
+                                self.device, dtype=self.dtype
+                            )
+                        )["feature_acts"]
+                        for batch in tmp_loader.iterate()
+                    ]
+                )
 
-                feature_acts = sae_output["feature_acts"].detach().cpu()
+                feature_acts = sae_output.detach().cpu()
                 l0_per_sample = (feature_acts > 0.0).float().sum(dim=-1)
                 df = pd.DataFrame({"l0_norm": l0_per_sample.numpy()})
 
@@ -345,7 +389,7 @@ class SAETrainer:
                 sns.histplot(
                     data=df,
                     x="l0_norm",
-                    bins=50,
+                    bins=100,
                     kde=False,
                     color="#00B5E2",
                     edgecolor="white",
@@ -417,15 +461,15 @@ class SAETrainer:
                     f"L0 activation histogram saved to {plot_filename}"
                 )
 
-                if self.trainer_cfg.wandb_project and wandb.run:
-                    wandb.log(
-                        {
-                            "plots/l0_activation_histogram": wandb.Image(
-                                str(plot_filename)
-                            )
-                        },
-                        step=step,
-                    )
+                # if self.trainer_cfg.wandb_project and wandb.run:
+                #     wandb.log(
+                #         {
+                #             "plots/l0_activation_histogram": wandb.Image(
+                #                 str(plot_filename)
+                #             )
+                #         },
+                #         step=step,
+                #     )
                 logger.info(
                     f"L0 activation histogram saved to {plot_filename} and "
                     f"logged to wandb."
@@ -445,7 +489,6 @@ class SAETrainer:
                 l0_per_sample,
                 df,
                 plot,
-                plot_batch,
             )
 
             logger.debug("Cleaning up plotting variables.")
@@ -454,7 +497,6 @@ class SAETrainer:
             logger.debug(f"Garbage collector collected {collected} objects.")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                logger.debug("CUDA cache cleared after plotting.")
 
             self.sae_model.train()
 
@@ -482,28 +524,6 @@ class SAETrainer:
         torch.save(trainer_state, checkpoint_subpath / "trainer_state.pt")
         logger.info(f"Checkpoint saved successfully to {checkpoint_subpath}")
 
-        if self.trainer_cfg.wandb_project and wandb.run:
-            try:
-                artifact_name = f"{wandb.run.name}-step-{step}"
-                artifact = wandb.Artifact(artifact_name, type="model")
-                # Check if path exists before adding
-                if checkpoint_subpath.exists():
-                    artifact.add_dir(str(checkpoint_subpath))
-                    wandb.log_artifact(artifact)
-                    logger.info(
-                        f"Checkpoint logged as wandb artifact: {artifact_name}"
-                    )
-                else:
-                    logger.warning(
-                        f"Checkpoint directory {checkpoint_subpath} not found "
-                        f"for artifact logging."
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Error logging checkpoint as wandb artifact: {e}",
-                    exc_info=True,
-                )
-
     def train(self) -> None:
         """Runs the main training loop."""
         logger.info("Starting training...")
@@ -514,60 +534,48 @@ class SAETrainer:
             desc="Training Progress",
         )
 
-        for epoch in range(self.trainer_cfg.num_epochs):
-            logger.info(
-                f"Starting Epoch {epoch + 1}/{self.trainer_cfg.num_epochs}"
-            )
-            epoch_start_time = time.time()
-            steps_in_epoch = 0
+        for batch in self.dataloader.iterate():
+            if self.global_step >= self.total_training_steps:
+                logger.warning(
+                    f"Global step {self.global_step} exceeds total "
+                    f"training steps {self.total_training_steps}. Halting."
+                )
+                break
 
-            for batch in self.dataloader:
-                steps_in_epoch += 1
-                if self.global_step >= self.total_training_steps:
-                    logger.warning(
-                        f"Global step {self.global_step} exceeds total "
-                        f"training steps {self.total_training_steps}. Halting."
-                    )
-                    break
+            log_data = self.train_step(batch)
+            # -------------------------------------------------------------
+            # Update progress bar
+            # -------------------------------------------------------------
+            if self.global_step % self.trainer_cfg.log_frequency == 0:
+                self._log_metrics(log_data, self.global_step)
 
-                log_data = self.train_step(batch)
-                # -------------------------------------------------------------
-                # Update progress bar
-                # -------------------------------------------------------------
-                if self.global_step % self.trainer_cfg.log_frequency == 0:
-                    self._log_metrics(log_data, self.global_step)
+                pbar.set_description(
+                    f"Step {self.global_step} | "
+                    f"Tokens: {self.total_tokens_processed:,} | "
+                    f"Loss: {log_data.get('loss', 0):.4f} | "
+                    f"L0: {log_data.get('l0_loss', 0):.2f} | "
+                    f"L2: {log_data.get('l2_loss', 0):.4f} | "
+                    f"LR: {log_data.get('lr', 0):.2e}"
+                )
 
-                    pbar.set_description(
-                        f"Ep {epoch+1} | Step {self.global_step} | "
-                        f"Loss: {log_data.get('loss', 0):.4f} | "
-                        f"L0: {log_data.get('l0_loss', 0):.2f} | "
-                        f"L2: {log_data.get('l2_loss', 0):.4f} | "
-                        f"LR: {log_data.get('lr', 0):.2e}"
-                    )
+            # -------------------------------------------------------------
+            # Checkpointing and Plotting
+            # -------------------------------------------------------------
+            if (
+                self.trainer_cfg.plot_frequency > 0
+                and self.global_step % self.trainer_cfg.plot_frequency == 0
+            ):
+                self._plot_feature_activation_histogram(self.global_step)
 
-                # -------------------------------------------------------------
-                # Checkpointing and Plotting
-                # -------------------------------------------------------------
-                if (
-                    self.trainer_cfg.plot_frequency > 0
-                    and self.global_step % self.trainer_cfg.plot_frequency == 0
-                ):
-                    self._plot_feature_activation_histogram(self.global_step)
+            if (
+                self.trainer_cfg.save_frequency > 0
+                and self.global_step % self.trainer_cfg.save_frequency == 0
+                and self.global_step > 0
+            ):
+                self._save_checkpoint(self.global_step)
 
-                if (
-                    self.trainer_cfg.save_frequency > 0
-                    and self.global_step % self.trainer_cfg.save_frequency == 0
-                    and self.global_step > 0
-                ):
-                    self._save_checkpoint(self.global_step)
+            pbar.update(1)
 
-                pbar.update(1)
-
-            epoch_duration = time.time() - epoch_start_time
-            logger.info(
-                f"Epoch {epoch + 1} finished in {epoch_duration:.2f} seconds "
-                f"({steps_in_epoch} steps)."
-            )
             # Break outer loop if inner loop broke due to exceeding total steps
             if self.global_step >= self.total_training_steps:
                 break

@@ -20,6 +20,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type
 
+import einops
 import torch
 from safetensors.torch import load_model, save_model
 from simple_parsing import Serializable
@@ -28,8 +29,6 @@ from torch import Tensor, nn
 TORCH_STRING_DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 
 logger = logging.getLogger(__name__)
-
-# TODO: add seeding upon initialization
 
 
 # =========================================================================== #
@@ -54,8 +53,8 @@ class BaseSAE(nn.Module, ABC):
         # W_dec shape: [d_in, d_sae]
         self.W_dec: nn.Module = nn.Linear(cfg.d_sae, cfg.d_in, bias=False)
 
-        self.pre_bias: nn.Parameter = nn.Parameter(torch.zeros(cfg.d_in))
-        self.latent_bias: nn.Parameter = nn.Parameter(torch.zeros(cfg.d_sae))
+        self.b_enc: nn.Parameter = nn.Parameter(torch.zeros(cfg.d_sae))
+        self.b_dec: nn.Parameter = nn.Parameter(torch.zeros(cfg.d_in))
 
         # ---------------------------------------------------------------------
         # Ensure consistent data types and devices
@@ -64,9 +63,11 @@ class BaseSAE(nn.Module, ABC):
         self.device: torch.device = torch.device(cfg.device)
         self.to(dtype=self.dtype, device=self.device)
 
-        self.num_batches_inactive: Tensor = torch.zeros(
+        self.num_tokens_inactive: Tensor = torch.zeros(
             (self.d_sae,), dtype=torch.int64, device=self.device
         )
+
+        self.mse_scale: float  # initialized in trainer
 
     def to(self, *args: Any, **kwargs: Any) -> "BaseSAE":
         """
@@ -93,8 +94,14 @@ class BaseSAE(nn.Module, ABC):
         Args:
             acts (Tensor): Activation tensor (batch_size * d_spatial, d_sae).
         """
-        self.num_batches_inactive += (acts.sum(0) == 0).int()
-        self.num_batches_inactive[acts.sum(0) != 0] = 0
+        num_batch_tokens = acts.shape[0]
+
+        feature_sums = acts.sum(0)
+        active_mask = feature_sums != 0
+        inactive_mask = feature_sums == 0
+
+        self.num_tokens_inactive[active_mask] = 0
+        self.num_tokens_inactive[inactive_mask] += num_batch_tokens
 
     def preprocess_input(self, x: Tensor) -> Tuple[Tensor, Dict[str, Any]]:
         """Preprocess the input data before encoding.
@@ -108,13 +115,9 @@ class BaseSAE(nn.Module, ABC):
                 - Dict[str, Tensor]: Dictionary of standardization scale and
                     shift values
         """
-        batch_size, d_spatial, d_in = x.shape
-
-        assert (
-            d_in == self.d_in
-        ), f"Input tensor has {d_in} channels, but model expects {self.d_in}."
-
-        x = x.reshape(batch_size * d_spatial, d_in)
+        if x.ndim == 3:
+            batch_size, d_spatial, d_in = x.shape
+            x = x.reshape(batch_size * d_spatial, d_in)
 
         if self.cfg.standardize_input:
             mu = x.mean(dim=-1, keepdim=True)
@@ -252,23 +255,24 @@ class BaseSAE(nn.Module, ABC):
             self.W_dec.weight is not None
             and self.W_dec.weight.grad is not None
         ):
+            self.unit_norm_decoder_()
             # W_dec shape: (d_in, d_sae)
             # grad shape g: (d_in, d_sae)
             # Project gradient g onto weight vectors (columns) w:
             # g' = g - (g * w) * w
 
             # Calculate the parallel component: g * w
-            parallel_component = torch.einsum(
-                "d_in d_sae, d_in d_sae-> d_sae",
+            parallel_component = einops.einsum(
                 self.W_dec.weight.grad,
                 self.W_dec.weight.data,
+                "d_in d_sae, d_in d_sae-> d_sae",
             )
             # Subtract the parallel component: g' = g - parallel_component * w
             self.W_dec.weight.grad.sub_(
-                torch.einsum(
-                    "d_sae, d_in d_sae-> d_in d_sae",
+                einops.einsum(
                     parallel_component,
                     self.W_dec.weight.data,
+                    "d_sae, d_in d_sae-> d_in d_sae",
                 )
             )
 

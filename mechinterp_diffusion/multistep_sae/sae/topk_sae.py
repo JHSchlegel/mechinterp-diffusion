@@ -16,15 +16,17 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .base_sae import BaseSAE
+from .metrics import (
+    explained_variance,
+    normalized_mse,
+)
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from config import TopKSAEConfig
 
 logger = logging.getLogger(__name__)
 
-# TODO: check SAeUron auxiliary loss scale and auxk; also check rescaling with
-# total variacne
-# TODO: double check SAeUron batchtopk flattening
+
 # =========================================================================== #
 #                             TopK SAE Class                                  #
 # =========================================================================== #
@@ -69,7 +71,6 @@ class TopKSAE(BaseSAE):
         Returns:
             Any: Output tensor after passing through the network
         """
-        batch_size, d_spatial, d_in = x.shape
         x_preprocessed, preprocess_info = self.preprocess_input(x)
 
         # ---------------------------------------------------------------------
@@ -77,21 +78,21 @@ class TopKSAE(BaseSAE):
         # ---------------------------------------------------------------------
         feature_acts_pre_relu = self.encode(x_preprocessed)
         feature_acts = F.relu(feature_acts_pre_relu)
-        acts_topk, _ = self._get_topk(
-            acts=feature_acts, k=self.cfg.k, batch_size=batch_size
-        )
+        acts_topk, _ = self._get_topk(acts=feature_acts, k=self.cfg.k)
 
         # ---------------------------------------------------------------------
         # Decoding
         # ---------------------------------------------------------------------
         x_reconstructed = self.decode(acts_topk)
-        self.update_inactive_features(acts_topk)
+        if self.training:
+            self.update_inactive_features(acts_topk)
 
         # TODO: potentially add multi topk logic here
 
         output = self._get_loss_dict(
             x=x_preprocessed,
             x_reconstructed=x_reconstructed,
+            feature_acts=feature_acts,
             acts_topk=acts_topk,
             info=preprocess_info,
         )
@@ -122,15 +123,12 @@ class TopKSAE(BaseSAE):
         """
         return self.W_dec(z) + self.b_dec
 
-    def _get_topk(
-        self, acts: Tensor, k: int = 32, batch_size: int = 4092
-    ) -> Tuple[Tensor, Tensor]:
+    def _get_topk(self, acts: Tensor, k: int = 32) -> Tuple[Tensor, Tensor]:
         """Applies the Top-K operation to the input tensor.
         Args:
             acts (Tensor): Input tensor
             k (int, optional): Number of top activations to keep. Defaults to
                 32.
-            batch_size (int, optional): Batch size. Defaults to 4092.
         Returns:
             Tuple[Tensor, Tensor]: Tuple containing:
                 - Tensor: Sparse tensor with only top-k activations being
@@ -148,7 +146,7 @@ class TopKSAE(BaseSAE):
 
             acts_flat = acts.flatten()
 
-            # Find the top k * batch_size * d_spatial values and their indices
+            # Find the top k * batch_size values and their indices
             topk_values, topk_indices = torch.topk(
                 acts_flat, k * acts.shape[0], dim=-1, sorted=False
             )
@@ -174,16 +172,21 @@ class TopKSAE(BaseSAE):
         self,
         x: Tensor,
         x_reconstructed: Tensor,
+        feature_acts: Tensor,
         acts_topk: Tensor,
         info: Dict[str, Tensor],
     ) -> Dict[str, Tensor | float]:
         """Calculates the total loss and individual loss components.
 
         Args:
-            forward_output (Dict[str, Tensor]): The dictionary returned by
-                forward() method.
-            original_input (Tensor): The original input tensor x passed to
-                forward() method.
+            x (Tensor): Original input tensor.
+            x_reconstructed (Tensor): Reconstructed output tensor.
+            feature_acts (Tensor): Activation tensor before topk operation is
+                applied.
+            acts_topk (Tensor): Activation tensor after topk operation is
+                applied.
+            info (Dict[str, Tensor]): Preprocessing information
+                (i.e. mean, std)
 
         Returns:
             Tuple[Tensor, Dict[str, Tensor]]:
@@ -194,19 +197,42 @@ class TopKSAE(BaseSAE):
         """
         l0_loss = (acts_topk > 0.0).float().sum(-1).mean()
         l1_loss = acts_topk.float().abs().sum(-1).mean()
-        l2_loss = (x_reconstructed.float() - x.float()).pow(2).mean()
-        # total_var = (x - x.mean(0)).float().pow(2).mean()
-        auxk_loss = self._get_auxiliary_loss(x, x_reconstructed, acts_topk)
+        l2_loss = (x_reconstructed.float() - x.float()).pow(
+            2
+        ).mean() * self.mse_scale
 
-        loss = (
-            l2_loss
-            + auxk_loss * self.cfg.auxk_loss_weight
-            + l1_loss * self.cfg.l1_loss_weight
+        explained_var = explained_variance(
+            x_reconstructed=x_reconstructed, x=x
         )
+        # total_var = (x - x.mean(0)).float().pow(2).mean()
 
         num_dead_features = (
-            self.num_batches_inactive >= self.cfg.num_batches_dead_threshold
+            self.num_tokens_inactive >= self.cfg.num_tokens_dead_threshold
         ).sum()
+
+        perc_dead_features = (
+            (self.num_tokens_inactive >= self.cfg.num_tokens_dead_threshold)
+            .float()
+            .mean()
+        )
+
+        # ---------------------------------------------------------------------
+        # Auxiliary Loss
+        # ---------------------------------------------------------------------
+        # Reduce scale of loss if there are few dead latents
+        # Copied from SAeUron implementation:
+        # see:
+        auxk_scale = min(num_dead_features / self.cfg.k_aux, 1.0)
+        auxk_loss = self._get_auxiliary_loss(x, x_reconstructed, feature_acts)
+
+        # ---------------------------------------------------------------------
+        # Combine Losses
+        # ---------------------------------------------------------------------
+        loss = (
+            l2_loss
+            + auxk_loss * self.cfg.auxk_loss_weight * auxk_scale
+            + l1_loss * self.cfg.l1_loss_weight
+        )
 
         sae_out = self.postprocess_output(x, info)
         return {
@@ -217,7 +243,9 @@ class TopKSAE(BaseSAE):
             "l0_loss": l0_loss,
             "l1_loss": l1_loss,
             "l2_loss": l2_loss,
+            "explained_variance": explained_var,
             "num_dead_features": num_dead_features,
+            "perc_dead_features": perc_dead_features,
         }
 
     def _get_auxiliary_loss(
@@ -237,11 +265,11 @@ class TopKSAE(BaseSAE):
             Tensor: The calculated auxiliary loss.
         """
         dead_features: Tensor = (
-            self.num_batches_inactive >= self.cfg.num_batches_dead_threshold
+            self.num_tokens_inactive >= self.cfg.num_tokens_dead_threshold
         )
 
         if dead_features.sum() > 0:
-            residual = x.float() - x_reconstructed.float()
+            # residual = x.float() - x_reconstructed.float()
             acts_topk_aux = torch.topk(
                 acts[:, dead_features],
                 min(self.cfg.k_aux, dead_features.sum()),
@@ -254,8 +282,14 @@ class TopKSAE(BaseSAE):
             selected_weights = self.W_dec.weight[:, dead_features]
             x_reconstruct_aux = acts_aux @ selected_weights.T
 
-            aux_loss = (
-                (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+            # aux_loss = (
+            #     (x_reconstruct_aux.float() - residual.float()).pow(2).mean()
+            # )
+            aux_loss = normalized_mse(
+                x_reconstructed=x_reconstruct_aux,
+                x=x.float()
+                - x_reconstructed.float().detach()
+                + self.b_dec.detach(),
             )
 
             return aux_loss

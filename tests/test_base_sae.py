@@ -2,13 +2,13 @@
 Unit tests for the BaseSAE abstract class
 """
 
-import os
-import sys
-import tempfile
-
 # =========================================================================== #
 #                           Packages and Presets                              #
 # =========================================================================== #
+
+import os
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Tuple

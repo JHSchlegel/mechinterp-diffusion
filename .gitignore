@@ -171,6 +171,7 @@ cython_debug/
 .pypirc
 
 flickr30k*/
+laion*/
 *data*/
 activations/
 
@@ -179,3 +180,10 @@ activations/
 **/checkpoints/**
 **/wandb/**
 **todo.md**
+
+**/results/**
+**/ablation_study/**
+**/ablation_results/**
+**/outputs/**
+**/output/**
+**/intervention_outputs/**
