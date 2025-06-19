@@ -27,11 +27,11 @@ BIRDS = [
     "blackbird",
     "grouse",
     "quail",
+    "bird",
 ]
 CATS = [
     "tabby cat",
     "kitten",
-    "kitty",
     "domestic cat",
     "street cat",
     "siamese cat",
@@ -45,7 +45,15 @@ CATS = [
     "tuxedo cat",
     "hairless cat",
 ]
-COLORS = ["white", "black", "orange", "brown", "grey"]
+COLORS = [
+    "white",
+    "black",
+    "orange",
+    "brown",
+    "grey",
+    "brown and white",
+    "black and white",
+]
 ACTIONS = [
     "in profile",
     "facing camera",
@@ -53,6 +61,8 @@ ACTIONS = [
     "at rest",
     "sitting still",
     "eating",
+    "resting",
+    "sleeping",
 ]
 STYLES = [
     "photorealistic image",
@@ -62,6 +72,11 @@ STYLES = [
     "sketch",
     "close up image",
     "portrait image",
+    "highly detailed image",
+    "cinematic image",
+    "vibrant image",
+    "artistic image",
+    "realistic image",
 ]
 
 
@@ -77,13 +92,13 @@ def main():
     parser.add_argument(
         "--train_size",
         type=int,
-        default=2000,
+        default=15_000,
         help="Size of train set. Defaults to 2000.",
     )
     parser.add_argument(
         "--test_size",
         type=int,
-        default=500,
+        default=3_000,
         help="Size of test set. Defaults to 500.",
     )
     parser.add_argument(
@@ -153,24 +168,37 @@ def create_dataset(
     random.shuffle(bird_prompts)
     random.shuffle(cat_prompts)
 
+    print(
+        f"Generated {len(bird_prompts)} bird prompts and "
+        f"{len(cat_prompts)} cat prompts."
+    )
+
     # calculate number of samples per class:
     n_train = train_size // 2
     n_test = test_size // 2
 
     train_data = {
-        "prompt": bird_prompts[:n_train] + cat_prompts[:n_train],
+        "caption": bird_prompts[:n_train] + cat_prompts[:n_train],
         "label": [0] * n_train + [1] * n_train,  # 0 for birds, 1 for cats
         "class_name": ["bird"] * n_train + ["cat"] * n_train,
     }
     test_prompts = {
-        "prompt": bird_prompts[n_train : n_train + n_test]
+        "caption": bird_prompts[n_train : n_train + n_test]
         + cat_prompts[n_train : n_train + n_test],
         "label": [0] * n_test + [1] * n_test,  # 0 for birds, 1 for cats
         "class_name": ["bird"] * n_test + ["cat"] * n_test,
     }
 
     train_dataset = Dataset.from_dict(train_data).shuffle(seed=seed)
+    assert len(train_dataset) == train_size, (
+        f"Expected {train_size} samples in train set, "
+        f"but got {len(train_dataset)}."
+    )
     test_dataset = Dataset.from_dict(test_prompts).shuffle(seed=seed)
+    assert len(test_dataset) == test_size, (
+        f"Expected {test_size} samples in test set, "
+        f"but got {len(test_dataset)}."
+    )
 
     dataset = DatasetDict(
         {
@@ -180,6 +208,8 @@ def create_dataset(
     )
     os.makedirs(save_path, exist_ok=True)
     dataset.save_to_disk(save_path)
+
+    print(f"Dataset saved to: {save_path}")
 
     return dataset
 
