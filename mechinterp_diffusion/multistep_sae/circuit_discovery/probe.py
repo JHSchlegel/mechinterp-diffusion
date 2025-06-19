@@ -11,6 +11,7 @@ from typing import List, Tuple
 # =========================================================================== #
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 sys.path.append(str(Path(__file__).parent.parent))
@@ -92,8 +93,14 @@ def train_probe(
     losses = []
 
     for _ in tqdm(range(epochs)):
-        for latents, labels in train_loader:
-            latents = latents.to(device)  # [bs, c, h, w]
+        for batch in train_loader:
+
+            latents = batch["activations"]
+            labels = batch["label"]
+            latents = latents.reshape(
+                -1, n_latent_channels, 16, 16
+            )  # [bs, c, h, w]
+            latents = latents.to(device)
             labels = labels.to(device).float()
 
             optimizer.zero_grad()
@@ -128,7 +135,10 @@ def test_probe(
     correct = 0
     total = 0
 
-    for latents, labels in test_loader:
+    for batch in test_loader:
+        latents = batch["activations"]
+        labels = batch["label"]
+        latents = latents.reshape(-1, probe.net[0].in_channels, 16, 16)
         latents = latents.to(device)  # [bs, c, h, w]
         labels = labels.to(device).float()
 
