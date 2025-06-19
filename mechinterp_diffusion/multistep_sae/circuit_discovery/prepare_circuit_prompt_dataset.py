@@ -112,9 +112,9 @@ def main():
         type=str,
         default=str(
             Path(__file__).resolve().parent.parent.parent.parent
-            / "data/birds_vs_cats_dataset"
+            / "data/prompts/birds_vs_cats_captions"
         ),
-        help="Path to save dataset. Defaults to 'data/birds_vs_cats_dataset'.",
+        help="Path to save dataset. Defaults to 'data/prompts/birds_vs_cats'.",  # noqa: E501
     )
 
     args = parser.parse_args()
