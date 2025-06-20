@@ -335,7 +335,7 @@ class TrainerConfig(Serializable):
     save_frequency: int = 50_000
     """Save model checkpoint every N steps."""
 
-    checkpoint_path: str = "../../../checkpoints"
+    checkpoint_path: str = "../../../checkpoints/sae"
     """Directory to save model checkpoints."""
 
 
@@ -398,7 +398,7 @@ class SAEInterventionConfig(Serializable):
     """Hugging Face model ID"""
 
     sae_path: str = (
-        "../../../checkpoints/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
+        "../../../checkpoints/sae/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
     )
     """Path to SAE model"""
 
