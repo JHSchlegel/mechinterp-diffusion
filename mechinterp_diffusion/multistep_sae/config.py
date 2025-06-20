@@ -382,7 +382,7 @@ class SAEInterventionConfig(Serializable):
     Configuration for SAE-based feature interventions in diffusion models.
     """
 
-    output_dir: str = "../../../intervention_outputs"
+    output_dir: str = "../../../results/intervention_outputs"
     """Directory to save outputs"""
 
     height: int = 512
@@ -432,7 +432,7 @@ class SAEInterventionConfig(Serializable):
     features: List[int] = field(default_factory=lambda: [0])
     """List of feature indices to intervene on"""
 
-    dataset_path: str = "../../../laion-coco_captions"
+    dataset_path: str = "../../../data/prompts/laion-coco_captions"
     """Path to HuggingFace prompt dataset"""
 
     dataset_split: str = "test"
