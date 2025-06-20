@@ -1,5 +1,5 @@
 #!/bin/bash
-cd ../mechinterp_diffusion/multistep_sae/scripts
+cd ../mechinterp_diffusion/scripts
 
 screen -S "collect_top_activating_examples" bash -c "
     python collect_top_dataset_examples.py \

@@ -14,7 +14,7 @@ import torch
 from datasets import Dataset
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from mechinterp_diffusion.multistep_sae.utils.activations_iterator import (
+from mechinterp_diffusion.core.utils.activations_iterator import (
     CustomActivationsIterator,
 )
 

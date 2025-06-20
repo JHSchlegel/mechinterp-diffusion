@@ -1,5 +1,5 @@
 #!/bin/bash
-cd ../mechinterp_diffusion/multistep_sae/scripts
+cd ../mechinterp_diffusion/scripts
 
 screen -S "collect_latents" bash -c "
 CUDA_VISIBLE_DEVICES=0 accelerate launch collect_latents.py \
