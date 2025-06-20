@@ -219,7 +219,7 @@ class LatentsExtractionConfig(Serializable):
 
         if self.extracted_latents_path is None:
             self.extracted_latents_path = os.path.join(
-                "../../../data/activations",
+                "../../data/activations",
                 self.model_name.split("/")[-1],
                 self.dataset_name.split("/")[-1],
                 self.dataset_split,
@@ -240,7 +240,7 @@ class TrainerConfig(Serializable):
     # Dataloading settings
     # -------------------------------------------------------------------------
     dataset_path: str = (
-        "../../../data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
+        "../../data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the directory containing the activation dataset."""
 
@@ -315,7 +315,7 @@ class TrainerConfig(Serializable):
     wandb_project: Optional[str] = "sae_training"
     """Weights & Biases project name."""
 
-    wandb_dir: Optional[str] = "../../../wandb"
+    wandb_dir: Optional[str] = "../../wandb"
 
     wandb_entity: Optional[str] = None
     """Weights & Biases entity name (optional)."""
@@ -335,7 +335,7 @@ class TrainerConfig(Serializable):
     save_frequency: int = 50_000
     """Save model checkpoint every N steps."""
 
-    checkpoint_path: str = "../../../checkpoints/sae"
+    checkpoint_path: str = "../../checkpoints/sae"
     """Directory to save model checkpoints."""
 
 
@@ -382,7 +382,7 @@ class SAEInterventionConfig(Serializable):
     Configuration for SAE-based feature interventions in diffusion models.
     """
 
-    output_dir: str = "../../../results/intervention_outputs"
+    output_dir: str = "../../results/intervention_outputs"
     """Directory to save outputs"""
 
     height: int = 512
@@ -398,7 +398,7 @@ class SAEInterventionConfig(Serializable):
     """Hugging Face model ID"""
 
     sae_path: str = (
-        "../../../checkpoints/sae/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
+        "../../checkpoints/sae/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
     )
     """Path to SAE model"""
 
@@ -432,7 +432,7 @@ class SAEInterventionConfig(Serializable):
     features: List[int] = field(default_factory=lambda: [0])
     """List of feature indices to intervene on"""
 
-    dataset_path: str = "../../../data/prompts/laion-coco_captions"
+    dataset_path: str = "../../data/prompts/laion-coco_captions"
     """Path to HuggingFace prompt dataset"""
 
     dataset_split: str = "test"
@@ -513,14 +513,14 @@ class AblationConfig:
 
     # Dataset paths
     train_dataset: str = (
-        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "../../data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
     )
     test_dataset: str = (
-        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "../../data/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
     )
 
     # Output directory
-    output_dir: str = "/media/Thesis/mechinterp-diffusion/results/ablation"
+    output_dir: str = "../../results/ablation"
 
 
 # =========================================================================== #
@@ -531,12 +531,12 @@ class ProbeConfig(Serializable):
     """Configuration for probe training."""
 
     train_dataset_path: str = (
-        "../../../data/activations/stable-diffusion-2-1/birds_vs_cats/train/subset_size-10000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
+        "../../data/activations/stable-diffusion-2-1/birds_vs_cats/train/subset_size-10000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the training dataset containing activations and labels."""
 
     test_dataset_path: str = (
-        "../../../data/activations/stable-diffusion-2-1/birds_vs_cats/test/subset_size-2000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
+        "../../data/activations/stable-diffusion-2-1/birds_vs_cats/test/subset_size-2000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the test dataset. If None, derives from train_dataset_path."""
 
@@ -581,7 +581,7 @@ class ProbeConfig(Serializable):
                     "probing dataset.",
                 )
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_dir = Path("../../../checkpoints") / "probe"
+            save_dir = Path("../../checkpoints") / "probe"
             save_dir.mkdir(parents=True, exist_ok=True)
 
             self.save_path = str(
