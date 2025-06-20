@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="../../../laion-coco_captions",
+        default="../../../data/prompts/laion-coco_captions",
         help="Directory to save the split dataset.",
     )
     parser.add_argument(
@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
 def sample_flickr30k_captions(
     num_train_samples: int = 100_000,
     num_test_samples: int = 50_000,
-    output_dir: str = "../../../flickr30k_captions",
+    output_dir: str = "../../../data/prompts/flickr30k_captions",
     seed: int = 42,
 ) -> None:
     """Create disjoint train and test sets from Flickr30k captions
@@ -185,7 +185,7 @@ def sample_flickr30k_captions(
 def sample_laion_captions(
     num_train_samples: int = 200_000,
     num_test_samples: int = 50_000,
-    output_dir: str = "../../../laion-coco_captions",
+    output_dir: str = "../../../data/prompts/laion-coco_captions",
     seed: int = 42,
 ) -> None:
     """Create disjoint train and test sets from Laion-Coco captions
