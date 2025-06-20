@@ -3,15 +3,16 @@ Configuration file for extracting latent representations from multi-step
 diffusion models and training sparse autoencoders on these representations.
 """
 
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
-
 import datetime
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+import torch
 from hydra.core.config_store import ConfigStore
 from simple_parsing import Serializable
 
@@ -239,7 +240,7 @@ class TrainerConfig(Serializable):
     # Dataloading settings
     # -------------------------------------------------------------------------
     dataset_path: str = (
-        "../../../activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
+        "../../../data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the directory containing the activation dataset."""
 
@@ -520,6 +521,73 @@ class AblationConfig:
 
     # Output directory
     output_dir: str = "/media/Thesis/mechinterp-diffusion/results/ablation"
+
+
+# =========================================================================== #
+#                        Circuit Discovery Probe Configuration                #
+# =========================================================================== #
+@dataclass
+class ProbeConfig(Serializable):
+    """Configuration for probe training."""
+
+    train_dataset_path: str = (
+        "../../../data/activations/stable-diffusion-2-1/birds_vs_cats/train/subset_size-10000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
+    )
+    """Path to the training dataset containing activations and labels."""
+
+    test_dataset_path: str = (
+        "../../../data/activations/stable-diffusion-2-1/birds_vs_cats/test/subset_size-2000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
+    )
+    """Path to the test dataset. If None, derives from train_dataset_path."""
+
+    num_epochs: int = 20
+    """Number of epochs to train the probe model."""
+
+    batch_size: int = 128
+    """Batch size for training the probe model."""
+
+    learning_rate: float = 1e-3
+    """Learning rate for the AdamW optimizer."""
+
+    weight_decay: float = 1e-5
+    """AdamW optimizer weight decay."""
+
+    n_hidden_channels: int = 64
+    """Number of hidden channels in the probe network."""
+
+    probe_type: Literal["cnn", "linear"] = "cnn"
+    """Type of probe to use ('cnn' or 'linear')."""
+
+    spatial_resolution: Tuple[int, int] = (16, 16)
+    """Spatial resolution of the latent activations (height, width)."""
+
+    seed: int = 42
+    """Random seed for reproducibility."""
+
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    """Device to use for training, either 'cuda' or 'cpu'."""
+
+    save_path: Optional[str] = None
+    """Path to save the trained probe model. If None, auto-generates path."""
+
+    def __post_init__(self):
+        if self.save_path is None:
+            dataset_parts = Path(self.train_dataset_path).parts
+            if "birds_vs_cats" in dataset_parts:
+                dataset_name = "birds_vs_cats"
+            else:
+                raise ValueError(
+                    "invalid dataset path, please provide a valid path to a ",
+                    "probing dataset.",
+                )
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_dir = Path("../../../checkpoints") / "probe"
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            self.save_path = str(
+                save_dir
+                / f"{self.probe_type}_{dataset_name}_{timestamp}.safetensors"
+            )
 
 
 # =========================================================================== #
