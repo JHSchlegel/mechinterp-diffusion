@@ -1,56 +1,52 @@
-from dataclasses import dataclass
+"""Script for training a probe on latent representations."""
+
+# =========================================================================== #
+#                           Packages and Presets                              #
+# =========================================================================== #
+
+import sys
+from pathlib import Path
 
 import matplotlib.pyplot as plt
-import torch
 from datasets import load_from_disk
 from safetensors.torch import load_file, save_file
-from simple_parsing import Serializable, parse
+from simple_parsing import parse
 from torch.utils.data import DataLoader
 
-
-@dataclass
-class ProbeConfig(Serializable):
-    """Configuration for the probe training."""
-
-    dataset_path: str = (
-        "../../../data/activations/stable-diffusion-2-1/birds_vs_cats/train/subset_size-10000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
-    )
-    num_epochs: int = 20
-    """Number of epochs to train the probe model."""
-
-    batch_size: int = 128
-    """Batch size for training the probe model."""
-
-    learning_rate: float = 1e-3
-    """Learning rate for the AdamW optimizer."""
-
-    weight_decay: float = 1e-5
-    """AdamW optimizer weight decay."""
-
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    """Device to use for training, either 'cuda' or 'cpu'."""
-
-    save_path: str = "probe_model.safetensors"
-    """Path to save the trained probe model."""
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from config import ProbeConfig
+from probe import LatentProbe, test_probe, train_probe
 
 
+# =========================================================================== #
+#                           Main Functionality                                #
+# =========================================================================== #
 def main() -> None:
+    """
+    Main function to train and evaluate a probe on latent representations.
+    """
     config = parse(ProbeConfig)
-    dataset = load_from_disk(config.dataset_path).shuffle(seed=42)
-    dataset.set_format(
+
+    # Load and prepare training dataset
+    train_dataset = load_from_disk(config.train_dataset_path).shuffle(
+        seed=config.seed
+    )
+    train_dataset.set_format(
         type="torch",
         columns=["activations", "label"],
     )
-    n_latent_channels = dataset.features["activations"].shape[1]
-    dataset = dataset.select_columns(["activations", "label"])
+    n_latent_channels = train_dataset.features["activations"].shape[1]
+    train_dataset = train_dataset.select_columns(["activations", "label"])
 
-    # train and validation split
-    train_size = int(0.9 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = dataset.train_test_split(
-        test_size=val_size, seed=42
-    ).values()
+    # Load and prepare test dataset
+    test_dataset = load_from_disk(config.test_dataset_path)
+    test_dataset.set_format(
+        type="torch",
+        columns=["activations", "label"],
+    )
+    test_dataset = test_dataset.select_columns(["activations", "label"])
 
+    # Create data loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
@@ -58,36 +54,50 @@ def main() -> None:
         num_workers=4,
         pin_memory=True,
     )
-    val_loader = DataLoader(
-        val_dataset,
+    test_loader = DataLoader(
+        test_dataset,
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=4,
         pin_memory=True,
     )
 
-    from probe import (
-        LatentProbe,
-        test_probe,
-        train_probe,
+    # Create probe instance
+    probe = LatentProbe(
+        n_latent_channels=n_latent_channels,
+        n_hidden_channels=config.n_hidden_channels,
+        probe_type=config.probe_type,
+        spatial_resolution=config.spatial_resolution,
     )
 
+    # Train the probe
     trained_probe, loss_history = train_probe(
-        train_loader,
-        n_latent_channels=n_latent_channels,
+        train_loader=train_loader,
+        probe=probe,
         lr=config.learning_rate,
         epochs=config.num_epochs,
-        n_hidden_channels=64,
+        seed=config.seed,
         device=config.device,
     )
 
-    accuracy = test_probe(trained_probe, val_loader, device=config.device)
-    print(f"Validation Accuracy: {accuracy:.4f}")
+    train_accuracy = test_probe(
+        trained_probe, train_loader, device=config.device
+    )
+    print(f"Training Accuracy: {train_accuracy:.4f}")
+
+    # Evaluate the probe on test set
+    test_accuracy = test_probe(
+        trained_probe, test_loader, device=config.device
+    )
+    print(f"Test Accuracy: {test_accuracy:.4f}")
+
     save_file(
         trained_probe.state_dict(),
         config.save_path,
     )
+    print(f"Model saved to: {config.save_path}")
 
+    # Plot training loss
     plt.plot(loss_history)
     plt.xlabel("Batch")
     plt.ylabel("Loss")
@@ -95,22 +105,35 @@ def main() -> None:
     plt.grid()
     plt.show()
 
-    # test whether the model can be loaded correctly
+    # Test loading the model
     loaded_probe = LatentProbe(
         n_latent_channels=n_latent_channels,
-        n_hidden_channels=64,
+        n_hidden_channels=config.n_hidden_channels,
+        probe_type=config.probe_type,
+        spatial_resolution=config.spatial_resolution,
     ).to(config.device)
     loaded_probe.load_state_dict(load_file(config.save_path))
     loaded_probe.eval()
-    loaded_accuracy = test_probe(
-        loaded_probe, val_loader, device=config.device
+
+    # Verify loaded model accuracy
+    loaded_train_accuracy = test_probe(
+        loaded_probe, train_loader, device=config.device
+    )
+    print(f"Loaded Model Training Accuracy: {loaded_train_accuracy:.4f}")
+
+    loaded_test_accuracy = test_probe(
+        loaded_probe, test_loader, device=config.device
     )
 
-    print(f"Loaded Model Validation Accuracy: {loaded_accuracy:.4f}")
+    print(f"Loaded Model Test Accuracy: {loaded_test_accuracy:.4f}")
 
     assert (
-        abs(accuracy - loaded_accuracy) < 1e-4
-    ), "Loaded model accuracy does not match original model accuracy."
+        abs(train_accuracy - loaded_train_accuracy) < 1e-4
+    ), "Loaded model training accuracy does not match original model accuracy."
+
+    assert (
+        abs(test_accuracy - loaded_test_accuracy) < 1e-4
+    ), "Loaded model testing accuracy does not match original model accuracy."
 
 
 if __name__ == "__main__":
