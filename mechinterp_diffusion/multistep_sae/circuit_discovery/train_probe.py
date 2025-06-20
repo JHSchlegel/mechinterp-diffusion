@@ -1,4 +1,9 @@
-"""Script for training a probe on latent representations."""
+"""
+Script for training a probe on latent representations.
+
+Example usage:
+    python train_probe.py --num_epochs 10 --batch_size 32 --learning_rate 0.001
+"""
 
 # =========================================================================== #
 #                           Packages and Presets                              #
