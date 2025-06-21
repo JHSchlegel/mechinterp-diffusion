@@ -1,4 +1,4 @@
-# Sweep configuration for ablating k parameter
+# Sweep configuration for ablating batch size parameter
 defaults:
   - config
 
@@ -10,5 +10,5 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      sae.k: 10,20,32,64
+      trainer.effective_batch_size: 1024,2048,4096,8192
       seed: 42,43,44,45,46

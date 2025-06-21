@@ -1,4 +1,4 @@
-# Sweep configuration for ablating k parameter
+# Sweep configuration for ablating use_batch_topk parameter
 defaults:
   - config
 
@@ -10,5 +10,5 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      sae.k: 10,20,32,64
+      sae.use_batch_topk: true,false
       seed: 42,43,44,45,46
