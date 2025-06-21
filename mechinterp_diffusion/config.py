@@ -504,23 +504,39 @@ class AblationConfig:
 
     # SAE and trainer configs will be populated by Hydra
     sae: TopKSAEConfig = field(default_factory=TopKSAEConfig)
+    """Sparse Autoencoder configuration for ablation studies."""
+
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    """Trainer configuration for ablation studies."""
 
     # Experiment settings
     sae_type: str = "topk"
-    seed: int = 42
-    num_eval_samples: int = 10000
+    """
+    Type of SAE to use for ablation studies. Currently only 'topk' is supported
+    """
 
-    # Dataset paths
+    seed: int = 42
+    """Random seeds for reproducibility."""
+
+    num_samples_per_timestep: int = 10000
+    """
+    Number of test samples to use for each timestep during ablation
+    """
+
+    # Dataset paths (relative to ablation output directory)
     train_dataset: str = (
-        "../../data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "/media/Thesis/mechinterp-diffusion/data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
+    """Path to the training dataset containing activations """
+
     test_dataset: str = (
-        "../../data/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "/media/Thesis/mechinterp-diffusion/data/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
+    """Path to the test dataset containing activations """
 
     # Output directory
     output_dir: str = "../../results/ablation"
+    """Directory to save ablation results and checkpoints."""
 
 
 # =========================================================================== #
