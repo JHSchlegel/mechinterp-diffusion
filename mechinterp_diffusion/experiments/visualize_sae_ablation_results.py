@@ -21,9 +21,10 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import plotnine as pn
+import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
@@ -54,27 +55,6 @@ PAPER_COLORS = {
     ],
 }
 
-# Academic theme for publication-quality plots
-THEME_ACADEMIC = pn.theme_bw() + pn.theme(
-    # text=element_text(family="monospace"),
-    plot_title=pn.element_text(weight="bold", size=14, ha="center"),
-    legend_text=pn.element_text(size=12),
-    legend_title=pn.element_text(size=12, hjust=0.5),
-    panel_background=pn.element_rect(fill="white", color="black"),
-    panel_border=pn.element_rect(color="black", size=1),
-    axis_ticks=pn.element_line(color="black", size=0.5),
-    panel_grid_major=pn.element_line(color="grey", size=0.3, alpha=0.5),
-    panel_grid_minor=pn.element_line(color="grey", size=0.2, alpha=0.3),
-    legend_background=pn.element_blank(),  # no box around the legend panel
-    legend_key=pn.element_blank(),  # no box behind each key
-    legend_key_size=18,
-    plot_margin=0.02,
-    figure_size=(8, 5),
-    axis_title=pn.element_text(size=14, weight="bold"),
-    axis_text=pn.element_text(size=12),
-    panel_spacing=0.05,
-)
-
 
 # =========================================================================== #
 #                            Main Visualization Logic                         #
@@ -97,8 +77,8 @@ def main():
     parser.add_argument(
         "--color",
         choices=["jama", "aaas"],
-        default="jama",
-        help="Color palette for plots (default: 'jama')",
+        default="aaas",
+        help="Color palette for plots (default: 'aaas')",
     )
     args = parser.parse_args()
 
@@ -125,6 +105,10 @@ def main():
     if df_overall.empty:
         logger.error("No overall results found in the directory")
         return
+
+    # Save to csv:
+    df_overall.to_csv(results_dir / "overall_results.csv", index=False)
+    df_timestep.to_csv(results_dir / "timestep_results.csv", index=False)
 
     logger.info(
         f"Loaded {len(df_overall)} runs with "
@@ -184,7 +168,7 @@ def main():
                     output_dir
                     / f'timestep_{metric}_by_{param.replace(".", "_")}.pdf'
                 )
-                p.save(filename, dpi=300)
+                p.savefig(filename, dpi=300)
                 logger.debug(f"Saved {filename}")
 
     logger.info(f"\nAll visualizations saved to {output_dir}")
@@ -370,16 +354,13 @@ def find_latest_ablation_dir() -> Path:
     )
 
 
-# --------------------------------------------------------------------------- #
-#                       Plotting and Table Functions                          #
-# --------------------------------------------------------------------------- #
 def plot_timestep_curves(
     df: pd.DataFrame,
     param: str,
     metric: str,
     use_std: bool = False,
     colors: List[str] = PAPER_COLORS["jama"],
-) -> pn.ggplot:
+) -> plt.Figure:
     """
     Create timestep curve plot for a given parameter and metric.
 
@@ -392,7 +373,7 @@ def plot_timestep_curves(
         colors (List[str]): List of colors for the parameter levels.
 
     Returns:
-        pn.ggplot: The generated plot object.
+        plt.Figure: The generated plot object.
     """
     # Calculate statistics
     stats = (
@@ -410,37 +391,79 @@ def plot_timestep_curves(
         stats["error_lower"] = stats["mean"] - 1.96 * stats["se"]
         stats["error_upper"] = stats["mean"] + 1.96 * stats["se"]
 
-    # Create plot
-    p = (
-        pn.ggplot(stats, pn.aes(x="diffusion_time", y="mean", color=param))
-        + pn.geom_ribbon(
-            pn.aes(ymin="error_lower", ymax="error_upper", fill=param),
+    # Convert param to string
+    stats[param] = stats[param].astype(str)
+    param_values = sorted(stats[param].unique())
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Plot for each parameter value
+    for i, param_val in enumerate(param_values):
+        subset = stats[stats[param] == param_val].sort_values("diffusion_time")
+
+        # Plot the ribbon (confidence/error band)
+        ax.fill_between(
+            subset["diffusion_time"],
+            subset["error_lower"],
+            subset["error_upper"],
             alpha=0.2,
+            color=colors[i],
+            label=None,  # No label for the ribbon
         )
-        + pn.geom_line(size=1.5)
-        + pn.geom_point(size=2)
-        + pn.scale_color_manual(values=colors[: df[param].nunique()])
-        + pn.scale_fill_manual(values=colors[: df[param].nunique()])
-        + pn.scale_x_reverse(breaks=np.arange(0, 1.1, 0.2), limits=[1, 0])
-        + pn.scale_y_continuous(limits=(0, None), expand=(0, 0.05))
-        + pn.labs(
-            x="Diffusion Time",
-            y=get_metric_label(metric),
-            color=get_clean_param_name(param),
-            fill=get_clean_param_name(param),
+
+        # Plot the mean line
+        ax.plot(
+            subset["diffusion_time"],
+            subset["mean"],
+            color=colors[i],
+            linewidth=1.5,
+            label=param_val,
+            marker="o",
+            markersize=4,
+            markeredgewidth=0,
         )
-        + THEME_ACADEMIC
-        + pn.theme(figure_size=(10, 6), legend_position="right")
-        + pn.guides(fill=False)  # Hide fill legend (redundant with color)
-    )
+
+    # Styling
+    ax.set_xlabel("Diffusion Time", fontsize=12)
+    ax.set_ylabel(get_metric_label(metric), fontsize=12)
+
+    # Reverse x-axis
+    ax.set_xlim(1, 0)
+    ax.set_xticks(np.arange(0, 1.1, 0.2))
+
+    # Set y-axis to start at 0
+    ax.set_ylim(bottom=0, top=stats["mean"].max() * 1.2)
 
     # Special formatting for variance explained
     if metric == "variance_explained":
-        p = p + pn.scale_y_continuous(
-            limits=[0, 1], labels=lambda x: [f"{val:.0%}" for val in x]
+        ax.set_ylim(0, 1)
+        ax.yaxis.set_major_formatter(
+            plt.FuncFormatter(lambda y, _: f"{y:.0%}")
         )
 
-    return p
+    # Grid
+    ax.grid(True, alpha=0.3, linestyle="-", linewidth=0.5)
+    ax.set_axisbelow(True)
+
+    # Legend
+    ax.legend(
+        title=get_clean_param_name(param),
+        frameon=True,
+        fancybox=False,
+        shadow=False,
+        edgecolor="black",
+        framealpha=1,
+        loc="best",
+    )
+
+    # Remove top and right spines
+    sns.despine()
+
+    # Tight layout
+    plt.tight_layout()
+
+    return fig
 
 
 def create_paper_table(
