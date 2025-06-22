@@ -51,14 +51,10 @@ from core.utils.reproducibility import set_all_seeds
 def main(cfg: AblationConfig) -> None:
     """Main efunction for Hydra-based ablation study."""
     logger.info(f"Running with config:\n{OmegaConf.to_yaml(cfg)}")
-
-    results = train_and_evaluate(cfg)
-
     from icecream import ic
 
-    ic(results)
-    types = {k: type(v) for k, v in results.items()}
-    ic(types)
+    ic(cfg.trainer.seed)
+    results = train_and_evaluate(cfg)
 
     # Save results
     results_file = "results.json"
@@ -254,7 +250,7 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Dictionary containing evaluation metrics.
     """
-    set_all_seeds(cfg.seed)
+    set_all_seeds(cfg.trainer.seed)
 
     if cfg.sae_type == "topk":
         # Convert from Hydra's DictConfig
@@ -328,7 +324,7 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
     metrics.update(
         {
             "sae_type": cfg.sae_type,
-            "seed": cfg.seed,
+            "seed": cfg.trainer.seed,
             "train_time": train_time,
             "l2_loss": metrics["overall"]["l2_loss"],
             "l2_loss_normalized": metrics["overall"]["l2_loss_normalized"],
