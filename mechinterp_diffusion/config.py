@@ -518,7 +518,7 @@ class AblationConfig:
     seed: int = 42
     """Random seeds for reproducibility."""
 
-    num_samples_per_timestep: int = 10000
+    num_samples_per_timestep: int = 10_000
     """
     Number of test samples to use for each timestep during ablation
     """
