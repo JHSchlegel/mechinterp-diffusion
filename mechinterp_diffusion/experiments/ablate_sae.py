@@ -9,6 +9,8 @@ Example usage:
     python ablate_sae_hydra.py -m sae=topk sae.k=10,20,40 trainer.lr=1e-4,1e-3
 """
 
+import datetime
+
 # =========================================================================== #
 #                             Packages and Presets                            #
 # =========================================================================== #
@@ -16,7 +18,6 @@ import gc
 import json
 import logging
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -53,6 +54,12 @@ def main(cfg: AblationConfig) -> None:
 
     results = train_and_evaluate(cfg)
 
+    from icecream import ic
+
+    ic(results)
+    types = {k: type(v) for k, v in results.items()}
+    ic(types)
+
     # Save results
     results_file = "results.json"
     with open(results_file, "w") as f:
@@ -70,6 +77,7 @@ def evaluate_sae(
     batch_size: int = 128,
     num_samples_per_timestep: int = 10000,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    use_batch_topk: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a Sparse Autoencoder on a test dataset.
 
@@ -89,7 +97,7 @@ def evaluate_sae(
     sae.eval()
 
     # use batch size as specified
-    batch_size = 1 if sae.use_batch_topk else batch_size
+    batch_size = 1 if use_batch_topk else batch_size
 
     # Unique timesteps:
     timesteps = sorted(
@@ -144,10 +152,6 @@ def evaluate_sae(
 
         for batch in test_loader:
             acts = batch["activations"].to(device)
-
-            from icecream import ic
-
-            ic(acts.shape)
             output = sae(acts)
 
             stats["l2"].extend(output["l2_loss"].view(-1).tolist())
@@ -284,9 +288,9 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
     )
 
     logger.info("Starting training...")
-    start_time = time.time()
+    start_time = datetime.datetime.now()
     trainer.train()
-    train_time = time.time() - start_time
+    train_time = (datetime.datetime.now() - start_time).total_seconds()
 
     # Clean up trainer to free memory before evaluation
     del trainer
@@ -300,6 +304,7 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
         batch_size=128,
         num_samples_per_timestep=cfg.num_samples_per_timestep,
         device=device,
+        use_batch_topk=cfg.sae.use_batch_topk,
     )
 
     # Add training info to overall metrics
@@ -307,7 +312,17 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
     metrics["overall"]["num_params"] = sum(
         p.numel() for p in sae_model.parameters()
     )
-    metrics["overall"]["num_dead_features"] = sae_model.num_tokens_inactive
+    metrics["overall"]["num_dead_features"] = (
+        (sae_model.num_tokens_inactive >= cfg.sae.num_tokens_dead_threshold)
+        .sum()
+        .item()
+    )
+
+    metrics["overall"]["perc_dead_features"] = (
+        (sae_model.num_tokens_inactive >= cfg.sae.num_tokens_dead_threshold)
+        .float()
+        .mean()
+    ).item()
 
     # Add config info to top level for compatibility
     metrics.update(
