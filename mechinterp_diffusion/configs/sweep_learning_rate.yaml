@@ -10,5 +10,5 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      trainer.lr: 1e-5,5e-5, 1e-4, 5e-4, 1e-3
-      seed: 42,43,44,45,46
+      trainer.lr: 1e-5, 1e-4, 1e-3
+      seed: 42,43,44

@@ -10,5 +10,5 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      sae.k: 10,20,32,64
-      seed: 42,43,44,45,46
+      sae.k: 10,20,32
+      seed: 42,43,44
