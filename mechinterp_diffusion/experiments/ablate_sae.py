@@ -51,9 +51,7 @@ from core.utils.reproducibility import set_all_seeds
 def main(cfg: AblationConfig) -> None:
     """Main efunction for Hydra-based ablation study."""
     logger.info(f"Running with config:\n{OmegaConf.to_yaml(cfg)}")
-    from icecream import ic
 
-    ic(cfg.trainer.seed)
     results = train_and_evaluate(cfg)
 
     # Save results
@@ -63,7 +61,6 @@ def main(cfg: AblationConfig) -> None:
 
     logger.info(f"Results saved to {results_file}")
     logger.info(f"Test L2 Loss: {results['l2_loss']:.6f}")
-    logger.info(f"Test L0 Loss: {results['l0_loss']:.2f}")
 
 
 @torch.no_grad()
@@ -141,26 +138,31 @@ def evaluate_sae(
         # ---------------------------------------------------------------------
         # Extract Batchwise Statistics
         # ---------------------------------------------------------------------
-        stats = {"l2": [], "l0": [], "aux": []}
+        stats = {"l2": [], "aux": []}
         act_sum = 0.0
         act_sq_sum = 0.0
         n_total_values = 0
 
         for batch in test_loader:
             acts = batch["activations"].to(device)
+
             output = sae(acts)
 
-            stats["l2"].extend(output["l2_loss"].view(-1).tolist())
-            stats["l0"].extend(output["l0_loss"].view(-1).tolist())
+            stats["l2"].extend(
+                (output["sae_out"].view_as(acts) - acts)
+                .pow(2)
+                .view(-1)
+                .tolist()
+            )
             stats["aux"].extend(
-                output.get("aux_loss", torch.zeros_like(output["l2_loss"]))
+                output.get("aux_loss", torch.zeros_like(output["l0_loss"]))
                 .view(-1)
                 .tolist()
             )
 
             # Accumulate for variance (across all activation values)
             act_sum += acts.sum().item()
-            act_sq_sum += (acts**2).sum().item()
+            act_sq_sum += acts.pow(2).sum().item()
             n_total_values += acts.numel()
 
             del acts, output
@@ -171,6 +173,7 @@ def evaluate_sae(
         # Aggregate Statistics for Timestep
         # ---------------------------------------------------------------------
         n = len(stats["l2"])
+        n_seq = len(stats["l2"])
         mean_act = act_sum / n_total_values
         var = act_sq_sum / n_total_values - mean_act**2
         l2_mean = sum(stats["l2"]) / n
@@ -185,8 +188,7 @@ def evaluate_sae(
             activation_sum=act_sum,
             activation_sq_sum=act_sq_sum,
             activation_count=n_total_values,
-            l0_loss=sum(stats["l0"]) / n,
-            aux_loss=sum(stats["aux"]) / n,
+            aux_loss=sum(stats["aux"]) / n_seq,
             total_samples=n,
         )
 
@@ -225,11 +227,6 @@ def evaluate_sae(
             if overall_variance > 0
             else 0
         ),
-        l0_loss=sum(
-            r["l0_loss"] * r["total_samples"]
-            for r in timestep_metrics.values()
-        )
-        / total_n,
         aux_loss=sum(
             r["aux_loss"] * r["total_samples"]
             for r in timestep_metrics.values()
@@ -329,7 +326,6 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
             "l2_loss": metrics["overall"]["l2_loss"],
             "l2_loss_normalized": metrics["overall"]["l2_loss_normalized"],
             "variance_explained": metrics["overall"]["variance_explained"],
-            "l0_loss": metrics["overall"]["l0_loss"],
             "aux_loss": metrics["overall"]["aux_loss"],
             **{
                 f"sae.{k}": v

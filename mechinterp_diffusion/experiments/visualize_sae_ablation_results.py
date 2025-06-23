@@ -119,7 +119,6 @@ def main():
     exclude_cols = [
         "l2_loss",
         "l2_loss_normalized",
-        "l0_loss",
         "variance_explained",
         "num_dead_features",
         "perc_dead_features",
@@ -154,7 +153,6 @@ def main():
         for metric in [
             "l2_loss",
             "l2_loss_normalized",
-            "l0_loss",
             "variance_explained",
         ]:
             if (
@@ -242,7 +240,6 @@ def load_results(results_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
             "l2_loss_normalized": data.get("overall", {}).get(
                 "l2_loss_normalized"
             ),
-            "l0_loss": data.get("overall", {}).get("l0_loss"),
             "variance_explained": data.get("overall", {}).get(
                 "variance_explained"
             ),
@@ -272,7 +269,6 @@ def load_results(results_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
                 ),
                 "l2_loss": metrics.get("l2_loss"),
                 "l2_loss_normalized": metrics.get("l2_loss_normalized"),
-                "l0_loss": metrics.get("l0_loss"),
                 "variance_explained": metrics.get("variance_explained"),
                 **params,
             }
@@ -312,15 +308,14 @@ def get_metric_label(metric: str) -> str:
 
     Args:
         metric (str): The metric name, e.g., "l2_loss", "l2_loss_normalized",
-            "l0_loss", etc.
+            etc.
     Returns:
         str: Cleaned metric label suitable for display, e.g., "MSE",
-            "Normalized MSE", "L0 (Sparsity)", etc.
+            "Normalized MSE", etc.
     """
     labels = {
         "l2_loss": "MSE",
         "l2_loss_normalized": "Normalized MSE",
-        "l0_loss": "L0 (Sparsity)",
         "variance_explained": "Fraction of Variance Explained",
         "num_dead_features": "Number of Dead Features",
         "perc_dead_features": "Percentage of Dead Features",
@@ -368,7 +363,7 @@ def plot_timestep_curves(
         df (pd.DataFrame): DataFrame containing per-timestep results.
         param (str): The parameter to plot, e.g., "sae.k", "trainer.lr", etc.
         metric (str): The metric to plot, e.g., "l2_loss",
-            "l2_loss_normalized", "l0_loss", "variance_explained", etc.
+            "l2_loss_normalized", "variance_explained", etc.
         use_std (bool): Whether to use ±SD instead of 95% CI for error bounds.
         colors (List[str]): List of colors for the parameter levels.
 
@@ -496,7 +491,6 @@ def create_paper_table(
         metrics = [
             "l2_loss",
             "l2_loss_normalized",
-            "l0_loss",
             "variance_explained",
             "num_dead_features",
             "perc_dead_features",
@@ -548,7 +542,6 @@ def create_paper_table(
     rename_map = {
         "l2_loss": "MSE",
         "l2_loss_normalized": "Norm. MSE",
-        "l0_loss": "L0",
         "variance_explained": "Var. Expl.",
         "num_dead_features": "Dead Features",
         "perc_dead_features": "% Dead",
@@ -564,7 +557,6 @@ def create_paper_table(
     metric_cols = [
         "MSE",
         "Norm. MSE",
-        "L0",
         "Var. Expl.",
         "Dead Features",
         "% Dead",
