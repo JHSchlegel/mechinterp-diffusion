@@ -138,7 +138,7 @@ def evaluate_sae(
         # ---------------------------------------------------------------------
         # Extract Batchwise Statistics
         # ---------------------------------------------------------------------
-        stats = {"l2": [], "aux": []}
+        stats = {"l2": []}
         act_sum = 0.0
         act_sq_sum = 0.0
         n_total_values = 0
@@ -148,16 +148,13 @@ def evaluate_sae(
 
             output = sae(acts)
 
-            stats["l2"].extend(
+            stats["l2"].append(
                 (output["sae_out"].view_as(acts) - acts)
                 .pow(2)
-                .view(-1)
-                .tolist()
-            )
-            stats["aux"].extend(
-                output.get("aux_loss", torch.zeros_like(output["l0_loss"]))
-                .view(-1)
-                .tolist()
+                .sum()
+                .detach()
+                .cpu()
+                .item()
             )
 
             # Accumulate for variance (across all activation values)
@@ -172,11 +169,9 @@ def evaluate_sae(
         # ---------------------------------------------------------------------
         # Aggregate Statistics for Timestep
         # ---------------------------------------------------------------------
-        n = len(stats["l2"])
-        n_seq = len(stats["l2"])
         mean_act = act_sum / n_total_values
         var = act_sq_sum / n_total_values - mean_act**2
-        l2_mean = sum(stats["l2"]) / n
+        l2_mean = sum(stats["l2"]) / n_total_values
 
         timestep_metrics[timestep] = {}
         timestep_metrics[timestep].update(
@@ -188,8 +183,7 @@ def evaluate_sae(
             activation_sum=act_sum,
             activation_sq_sum=act_sq_sum,
             activation_count=n_total_values,
-            aux_loss=sum(stats["aux"]) / n_seq,
-            total_samples=n,
+            total_samples=n_total_values,
         )
 
     # -------------------------------------------------------------------------
@@ -227,11 +221,6 @@ def evaluate_sae(
             if overall_variance > 0
             else 0
         ),
-        aux_loss=sum(
-            r["aux_loss"] * r["total_samples"]
-            for r in timestep_metrics.values()
-        )
-        / total_n,
         total_samples=total_n,
     )
 
@@ -326,7 +315,6 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
             "l2_loss": metrics["overall"]["l2_loss"],
             "l2_loss_normalized": metrics["overall"]["l2_loss_normalized"],
             "variance_explained": metrics["overall"]["variance_explained"],
-            "aux_loss": metrics["overall"]["aux_loss"],
             **{
                 f"sae.{k}": v
                 for k, v in OmegaConf.to_container(cfg.sae).items()
