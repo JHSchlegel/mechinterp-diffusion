@@ -83,6 +83,7 @@ def evaluate_sae(
         num_samples (int, optional): . Defaults to 10000.
         device (str, optional): Device to use. Defaults to "cuda" whenever it
             is available, otherwise "cpu".
+            Defaults to True.
 
     Returns:
         Dict[str, Any]: Dictionary containing evaluation metrics.
@@ -148,14 +149,10 @@ def evaluate_sae(
 
             output = sae(acts)
 
-            stats["l2"].append(
-                (output["sae_out"].view_as(acts) - acts)
-                .pow(2)
-                .sum()
-                .detach()
-                .cpu()
-                .item()
-            )
+            # Total MSE for this batch
+            batch_mse = (output["sae_out"].view_as(acts) - acts).pow(2).sum()
+
+            stats["l2"].append(batch_mse.detach().cpu().item())
 
             # Accumulate for variance (across all activation values)
             act_sum += acts.sum().item()
@@ -236,7 +233,12 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Dictionary containing evaluation metrics.
     """
+    cfg.trainer.seed = cfg.seed
     set_all_seeds(cfg.trainer.seed)
+
+    from icecream import ic
+
+    ic(cfg.trainer.seed)
 
     if cfg.sae_type == "topk":
         # Convert from Hydra's DictConfig

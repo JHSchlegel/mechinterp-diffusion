@@ -518,9 +518,9 @@ class AblationConfig:
     seed: int = 42
     """Random seeds for reproducibility."""
 
-    num_samples_per_timestep: int = 1  # 0_000
+    num_samples_per_timestep: int = 10_000
     """
-    Number of test samples to use for each timestep during ablation
+    Number of test samples to use for eatech timestep during ablation
     """
 
     # Dataset paths (relative to ablation output directory)
@@ -537,9 +537,6 @@ class AblationConfig:
     # Output directory
     output_dir: str = "../../results/ablation"
     """Directory to save ablation results and checkpoints."""
-
-    def __post_init__(self) -> None:
-        self.trainer.seed = self.seed
 
 
 # =========================================================================== #
