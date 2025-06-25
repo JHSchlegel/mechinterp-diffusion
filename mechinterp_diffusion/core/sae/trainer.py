@@ -8,6 +8,8 @@ checkpointing for SAE models.
 # =========================================================================== #
 #                            Packages and Presets                             #
 # =========================================================================== #
+
+
 import gc
 import json
 import logging
@@ -35,7 +37,9 @@ from transformers import SchedulerType, get_scheduler
 import wandb
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+)
 from config import TrainerConfig, TrainingConfig
 from utils.activations_iterator import CustomActivationsIterator
 
@@ -114,15 +118,18 @@ class SAETrainer:
                 f"{self.trainer_cfg.target_timesteps}"
             )
             target_set = set(self.trainer_cfg.target_timesteps)
+
             self.train_indices = [
                 i
                 for i, ts in enumerate(self.dataset["timestep"])
                 if ts.item() in target_set
             ]
+
             if not self.train_indices:
                 raise ValueError(
                     "No data found for the specified target_timesteps."
                 )
+
             logger.info(f"Filtered dataset size: {len(self.train_indices)}")
             self.train_dataset = self.dataset.select(self.train_indices)
         else:
@@ -285,6 +292,7 @@ class SAETrainer:
         activations = batch["activations"].to(self.device, dtype=self.dtype)
 
         sae_output = self.sae_model(activations)
+        # sae_output = self.sae_model(activations)
         loss = sae_output["loss"]
 
         self.optimizer.zero_grad()

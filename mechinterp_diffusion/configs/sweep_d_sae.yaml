@@ -12,4 +12,4 @@ hydra:
   sweeper:
     params:
       sae.d_sae: 2560,5120,10240,20480
-      seed: 42,43,44
+      seed: 42

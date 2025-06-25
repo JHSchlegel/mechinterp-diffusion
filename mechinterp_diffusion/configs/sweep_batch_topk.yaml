@@ -11,4 +11,4 @@ hydra:
   sweeper:
     params:
       sae.use_batch_topk: true, false
-      seed: 42 ,43, 44
+      seed: 42

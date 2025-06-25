@@ -11,4 +11,4 @@ hydra:
   sweeper:
     params:
       sae.k: 10,20,32
-      seed: 42,43,44
+      seed: 42
