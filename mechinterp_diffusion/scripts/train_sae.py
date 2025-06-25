@@ -11,9 +11,12 @@ Usage examples:
 # =========================================================================== #
 #                           Packages and Presets                              #
 # =========================================================================== #
+
+
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Tuple
 
 import torch
@@ -22,23 +25,15 @@ from simple_parsing import (
     ArgumentParser,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",  # noqa: E501
-)
 logger = logging.getLogger(__name__)
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(str(Path(__file__).parent.parent))
 
-from config import (
-    TopKSAEConfig,
-    TrainerConfig,
-    TrainingConfig,
-)
-from sae.base_sae import BaseSAE
-from sae.topk_sae import TopKSAE
-from sae.trainer import SAETrainer
-from utils.reproducibility import set_all_seeds
+from config import TopKSAEConfig, TrainerConfig, TrainingConfig
+from core.sae.base_sae import BaseSAE
+from core.sae.topk_sae import TopKSAE
+from core.sae.trainer import SAETrainer
+from core.utils.reproducibility import set_all_seeds
 
 
 # =========================================================================== #
@@ -51,6 +46,10 @@ def main() -> None:
     config, sae_type = parse_arguments()
 
     os.makedirs(config.trainer.checkpoint_path, exist_ok=True)
+    # Clear any existing handlers to avoid duplication
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     log_filename = config.trainer.checkpoint_path + "/train_sae.log"
     logging.basicConfig(
         level=logging.INFO,
@@ -127,7 +126,9 @@ def parse_arguments() -> Tuple[TrainingConfig, str]:
     # basic parser just to get the SAE type
     parser = ArgumentParser()
     parser.add_argument(
-        "sae_type", choices=["TopK"], help="Type of SAE to train"
+        "sae_type",
+        choices=["TopK"],
+        help="Type of SAE to train",
     )
     args, remaining_args = parser.parse_known_args()
 
