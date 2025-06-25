@@ -1,0 +1,14 @@
+# Sweep configuration for ablating k parameter
+defaults:
+  - config
+
+# Override trainer config
+trainer:
+  num_tokens: 200000000
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      sae.k: 10,20,32
+      seed: 42,43,44

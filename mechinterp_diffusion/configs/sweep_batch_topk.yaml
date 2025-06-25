@@ -1,0 +1,14 @@
+# Sweep configuration for ablating use_batch_topk parameter
+defaults:
+  - config
+
+# Override trainer config
+trainer:
+  num_tokens: 200000000
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      sae.use_batch_topk: true, false
+      seed: 42 ,43, 44

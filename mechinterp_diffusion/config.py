@@ -3,15 +3,16 @@ Configuration file for extracting latent representations from multi-step
 diffusion models and training sparse autoencoders on these representations.
 """
 
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
-
 import datetime
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+import torch
 from hydra.core.config_store import ConfigStore
 from simple_parsing import Serializable
 
@@ -218,7 +219,7 @@ class LatentsExtractionConfig(Serializable):
 
         if self.extracted_latents_path is None:
             self.extracted_latents_path = os.path.join(
-                "../../../data/activations",
+                "../../data/activations",
                 self.model_name.split("/")[-1],
                 self.dataset_name.split("/")[-1],
                 self.dataset_split,
@@ -239,7 +240,7 @@ class TrainerConfig(Serializable):
     # Dataloading settings
     # -------------------------------------------------------------------------
     dataset_path: str = (
-        "../../../activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
+        "../../data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the directory containing the activation dataset."""
 
@@ -314,7 +315,7 @@ class TrainerConfig(Serializable):
     wandb_project: Optional[str] = "sae_training"
     """Weights & Biases project name."""
 
-    wandb_dir: Optional[str] = "../../../wandb"
+    wandb_dir: Optional[str] = "../../wandb"
 
     wandb_entity: Optional[str] = None
     """Weights & Biases entity name (optional)."""
@@ -334,7 +335,7 @@ class TrainerConfig(Serializable):
     save_frequency: int = 50_000
     """Save model checkpoint every N steps."""
 
-    checkpoint_path: str = "../../../checkpoints"
+    checkpoint_path: str = "../../checkpoints/sae"
     """Directory to save model checkpoints."""
 
 
@@ -381,7 +382,7 @@ class SAEInterventionConfig(Serializable):
     Configuration for SAE-based feature interventions in diffusion models.
     """
 
-    output_dir: str = "../../../intervention_outputs"
+    output_dir: str = "../../results/intervention_outputs"
     """Directory to save outputs"""
 
     height: int = 512
@@ -397,7 +398,7 @@ class SAEInterventionConfig(Serializable):
     """Hugging Face model ID"""
 
     sae_path: str = (
-        "../../../checkpoints/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
+        "../../checkpoints/sae/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
     )
     """Path to SAE model"""
 
@@ -431,7 +432,7 @@ class SAEInterventionConfig(Serializable):
     features: List[int] = field(default_factory=lambda: [0])
     """List of feature indices to intervene on"""
 
-    dataset_path: str = "../../../laion-coco_captions"
+    dataset_path: str = "../../data/prompts/laion-coco_captions"
     """Path to HuggingFace prompt dataset"""
 
     dataset_split: str = "test"
@@ -503,23 +504,106 @@ class AblationConfig:
 
     # SAE and trainer configs will be populated by Hydra
     sae: TopKSAEConfig = field(default_factory=TopKSAEConfig)
+    """Sparse Autoencoder configuration for ablation studies."""
+
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    """Trainer configuration for ablation studies."""
 
     # Experiment settings
     sae_type: str = "topk"
-    seed: int = 42
-    num_eval_samples: int = 10000
+    """
+    Type of SAE to use for ablation studies. Currently only 'topk' is supported
+    """
 
-    # Dataset paths
+    seed: int = 42
+    """Random seeds for reproducibility."""
+
+    num_samples_per_timestep: int = 10_000
+    """
+    Number of test samples to use for eatech timestep during ablation
+    """
+
+    # Dataset paths (relative to ablation output directory)
     train_dataset: str = (
-        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "/media/Thesis/mechinterp-diffusion/data/activations/stable-diffusion-2-1/laion/train/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
+    """Path to the training dataset containing activations """
+
     test_dataset: str = (
-        "/media/Thesis/mechinterp-diffusion/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"
+        "/media/Thesis/mechinterp-diffusion/data/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
+    """Path to the test dataset containing activations """
 
     # Output directory
-    output_dir: str = "/media/Thesis/mechinterp-diffusion/results/ablation"
+    output_dir: str = "../../results/ablation"
+    """Directory to save ablation results and checkpoints."""
+
+
+# =========================================================================== #
+#                        Circuit Discovery Probe Configuration                #
+# =========================================================================== #
+@dataclass
+class ProbeConfig(Serializable):
+    """Configuration for probe training."""
+
+    train_dataset_path: str = (
+        "../../data/activations/stable-diffusion-2-1/birds_vs_cats/train/subset_size-10000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
+    )
+    """Path to the training dataset containing activations and labels."""
+
+    test_dataset_path: str = (
+        "../../data/activations/stable-diffusion-2-1/birds_vs_cats/test/subset_size-2000/25-inference-steps/timesteps-4/unet.down_blocks.2.attentions.0"  # noqa: E501
+    )
+    """Path to the test dataset. If None, derives from train_dataset_path."""
+
+    num_epochs: int = 20
+    """Number of epochs to train the probe model."""
+
+    batch_size: int = 128
+    """Batch size for training the probe model."""
+
+    learning_rate: float = 1e-3
+    """Learning rate for the AdamW optimizer."""
+
+    weight_decay: float = 1e-5
+    """AdamW optimizer weight decay."""
+
+    n_hidden_channels: int = 64
+    """Number of hidden channels in the probe network."""
+
+    probe_type: Literal["cnn", "linear"] = "cnn"
+    """Type of probe to use ('cnn' or 'linear')."""
+
+    spatial_resolution: Tuple[int, int] = (16, 16)
+    """Spatial resolution of the latent activations (height, width)."""
+
+    seed: int = 42
+    """Random seed for reproducibility."""
+
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    """Device to use for training, either 'cuda' or 'cpu'."""
+
+    save_path: Optional[str] = None
+    """Path to save the trained probe model. If None, auto-generates path."""
+
+    def __post_init__(self):
+        if self.save_path is None:
+            dataset_parts = Path(self.train_dataset_path).parts
+            if "birds_vs_cats" in dataset_parts:
+                dataset_name = "birds_vs_cats"
+            else:
+                raise ValueError(
+                    "invalid dataset path, please provide a valid path to a ",
+                    "probing dataset.",
+                )
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_dir = Path("../../checkpoints") / "probe"
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            self.save_path = str(
+                save_dir
+                / f"{self.probe_type}_{dataset_name}_{timestamp}.safetensors"
+            )
 
 
 # =========================================================================== #

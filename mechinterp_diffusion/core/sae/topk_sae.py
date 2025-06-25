@@ -234,7 +234,7 @@ class TopKSAE(BaseSAE):
             + l1_loss * self.cfg.l1_loss_weight
         )
 
-        sae_out = self.postprocess_output(x, info)
+        sae_out = self.postprocess_output(x_reconstructed, info=info)
         return {
             "loss": loss,
             "sae_out": sae_out,

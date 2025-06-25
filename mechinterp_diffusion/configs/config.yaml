@@ -1,0 +1,14 @@
+# Default configuration: uses structured configs from config.py
+defaults:
+  - /ablation
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${output_dir}/${hydra.job.name}/${hydra.job.override_dirname}
+  sweep:
+    dir: ${output_dir}/${hydra.job.name}
+    subdir: ${hydra.job.override_dirname}
+  job:
+    name: ${sae_type}_oaat_${now:%Y%m%d_%H%M%S}
+    chdir: true

@@ -18,8 +18,8 @@ import torch.nn.functional as F
 from torch import Tensor
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from mechinterp_diffusion.multistep_sae.config import BaseSAEConfig
-from mechinterp_diffusion.multistep_sae.sae.base_sae import BaseSAE
+from mechinterp_diffusion.config import BaseSAEConfig
+from mechinterp_diffusion.core.sae.base_sae import BaseSAE
 
 # =========================================================================== #
 #                        Test Suite for BaseSAE Class                         #

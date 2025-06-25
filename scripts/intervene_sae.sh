@@ -1,5 +1,5 @@
 #!/bin/bash
-cd ../mechinterp_diffusion/multistep_sae/scripts
+cd ../mechinterp_diffusion/experiments
 
 # Feature intervention example
 python intervene_sae.py \

@@ -1,0 +1,14 @@
+# Sweep configuration for ablating batch size parameter
+defaults:
+  - config
+
+# Override trainer config
+trainer:
+  num_tokens: 200000000
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      trainer.effective_batch_size: 2048,4096,8192
+      seed: 42,43,44

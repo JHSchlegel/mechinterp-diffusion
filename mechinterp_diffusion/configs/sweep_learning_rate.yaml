@@ -1,0 +1,14 @@
+# Sweep configuration for ablating learning rate parameter
+defaults:
+  - config
+
+# Override trainer config
+trainer:
+  num_tokens: 200000000
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      trainer.lr: 1e-5, 1e-4, 1e-3
+      seed: 42,43,44
