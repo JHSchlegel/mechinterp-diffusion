@@ -1,4 +1,4 @@
-# Sweep configuration for ablating learning rate parameter
+# Sweep configuration for ablating batch size parameter
 defaults:
   - config
 
@@ -10,5 +10,5 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      trainer.lr: 1e-5, 1e-4, 1e-3
+      trainer.standardize_input: true, false
       seed: 42

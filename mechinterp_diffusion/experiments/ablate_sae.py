@@ -52,6 +52,8 @@ def main(cfg: AblationConfig) -> None:
     """Main efunction for Hydra-based ablation study."""
     logger.info(f"Running with config:\n{OmegaConf.to_yaml(cfg)}")
 
+    cfg.trainer.wandb_project = "sae_ablation_study"
+
     results = train_and_evaluate(cfg)
 
     # Save results
@@ -89,9 +91,7 @@ def evaluate_sae(
         Dict[str, Any]: Dictionary containing evaluation metrics.
     """
     sae.eval()
-
-    # use batch size as specified
-    batch_size = 1 if use_batch_topk else batch_size
+    sae.cfg.use_batch_topk = False  # Disable batch top-k for evaluation
 
     # Unique timesteps:
     timesteps = sorted(
@@ -148,6 +148,12 @@ def evaluate_sae(
             acts = batch["activations"].to(device)
 
             output = sae(acts)
+
+            # sae_input, info = sae.preprocess_input(acts)
+            # reconstruct = sae.postprocess_output(
+            #     sae.decode(torch.nn.functional.relu(sae.encode(sae_input))),
+            #     info,
+            # )
 
             # Total MSE for this batch
             batch_mse = (output["sae_out"].view_as(acts) - acts).pow(2).sum()

@@ -265,7 +265,7 @@ class TrainerConfig(Serializable):
     effective_batch_size: int = 4096
     """Number of activation vectors per training batch."""
 
-    num_tokens: int = int(2e9)
+    num_tokens: int = int(5e8)
     """
     Number of tokens to process during training. This is the number of
     activation vectors to process, not the number of training steps. The number
@@ -278,7 +278,7 @@ class TrainerConfig(Serializable):
     timesteps in the dataset.
     """
 
-    lr_scheduler_type: str = "constant"
+    lr_scheduler_type: str = "cosine"
     """
     Type of learning rate scheduler to use. See Hugging Face documentation for
     more details:
@@ -297,7 +297,7 @@ class TrainerConfig(Serializable):
     - “warmup_stable_decay” = get_wsd_schedule
     """
 
-    warmup_steps: int = 0
+    warmup_steps: int = 1000
     """Number of learning rate warmup steps."""
 
     adam_beta1: float = 0.9
