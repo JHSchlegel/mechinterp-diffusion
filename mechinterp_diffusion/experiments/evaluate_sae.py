@@ -18,7 +18,8 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, Tuple
+from umap import UMAP
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 from config import TopKSAEConfig
 from core.sae.base_sae import BaseSAE
 from core.sae.topk_sae import TopKSAE
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -39,10 +42,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+PAPER_COLORS = {
+    # see: https://nanx.me/ggsci/reference/pal_jama.html
+    "jama": [
+        "#DF8F44FF",
+        "#00A1D5FF",
+        "#B24745FF",
+        "#374E55FF",
+        "#79AF97FF",
+        "#6A6599FF",
+        "#80796BFF",
+    ],
+    # see: https://nanx.me/ggsci/reference/pal_aaas.html
+    "aaas": [
+        "#3B4992FF",
+        "#EE0000FF",
+        "#008B45FF",
+        "#631879FF",
+        "#008280FF",
+        "#BB0021FF",
+        "#5F559BFF",
+        "#A20056FF",
+        "#808180FF",
+        "#1B1919FF",
+    ],
+}
+plt.style.use('default')
+
 # TODO: include spatial activation in plotting
 # TODO: density ridges
 # TODO: r2; normalized mse; feature distribution; norms plot
 # TODO: UMAP decoder
+# TODO: Allow for multiple SAEs to be evaluated at once; or maybe save to SAE path? # noqa: E501
 # =========================================================================== #
 #                            Main Functionality                               #
 # =========================================================================== #
@@ -79,8 +110,19 @@ def main() -> None:
         help="Number of samples to evaluate per timestep. "
         "If None, evaluates all samples.",
     )
+    
+    parser.add_argument(
+        "--colors",
+        type=str,
+        choices=["jama", "aaas"],
+        default="aaas",
+        help="Color palette to use for plots",
+    )
 
     args = parser.parse_args()
+    
+    sns.set_palette(PAPER_COLORS[args.colors])
+
 
     # Load the SAE model
     sae = TopKSAE.load_from_disk(
@@ -97,6 +139,7 @@ def main() -> None:
         device="cuda" if torch.cuda.is_available() else "cpu",
         num_samples=args.num_samples,
         batch_size=100,
+        output_dir=args.output_dir,
     )
     evaluator.run()
 
@@ -114,6 +157,7 @@ class Evaluator:
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         num_samples: Optional[int] = None,
         batch_size: int = 100,
+        output_dir: Union[str, Path] = "../../results/evaluation_results",
     ) -> None:
         """_summary_
 
@@ -128,6 +172,7 @@ class Evaluator:
                 Defaults to 100.
         """
         num_timesteps = len(np.unique(dataset["timestep"]))
+        self.max_timestep = max(dataset["timestep"]).item()
         assert (
             num_samples is None or num_samples <= len(dataset) // num_timesteps
         ), "num_samples must be less than or equal to number of test examples"
@@ -155,12 +200,15 @@ class Evaluator:
         self.batch_size = 1 if self.sae.use_batch_topk else batch_size
 
         self.sae.eval()
+        
+        os.makedirs(output_dir, exist_ok=True)
 
     def run(self) -> None:
         """Run the evaluation process."""
         self._evaluate_reconstruction()
+        self._plot_reconstruction()
+        
         self._evaluate_features()
-        self._plot_results()
 
         self._save_results()
         raise NotImplementedError("This method is not implemented yet.")
@@ -168,13 +216,11 @@ class Evaluator:
     def _save_results(self) -> None:
         raise NotImplementedError("This method is not implemented yet.")
 
-    def _plot_results(self) -> None:
-        raise NotImplementedError("This method is not implemented yet.")
 
     @torch.no_grad()
     def _evaluate_reconstruction(
         self,
-    ) -> Dict[str, Dict[str, Union[float, int]]]:
+    ) -> None:
         timestep_metrics = {}
         for timestep in tqdm(self.timesteps, desc="Evaluating timesteps"):
             # Get indices for this timestep
@@ -242,13 +288,13 @@ class Evaluator:
             # -----------------------------------------------------------------
             mean_act = act_sum / n_total_values
             var = act_sq_sum / n_total_values - mean_act**2
-            l2_mean = sum(stats["l2"]) / n_total_values
+            mse = sum(stats["l2"]) / n_total_values
 
             timestep_metrics[timestep] = {}
             timestep_metrics[timestep].update(
-                l2_loss=l2_mean,
-                l2_loss_normalized=l2_mean / var if var > 0 else l2_mean,
-                variance_explained=max(0, 1 - l2_mean / var) if var > 0 else 0,
+                mse=mse,
+                mse_normalized=mse / var if var > 0 else mse,
+                variance_explained=max(0, 1 - mse / var) if var > 0 else 0,
                 activation_variance=var,
                 activation_mean=mean_act,
                 activation_sum=act_sum,
@@ -277,28 +323,164 @@ class Evaluator:
         overall_variance = total_act_sq_sum / total_act_count - overall_mean**2
 
         # Total MSE
-        total_mse_sum = sum(
+        total_mse = sum(
             r["l2_loss"] * r["total_samples"]
             for r in timestep_metrics.values()
+        ) / total_n
+        
+        feature_is_inactive = (
+            self.sae.num_tokens_inactive >= self.sae.cfg.num_tokens_dead_threshold # noqa: E501
         )
 
         overall = {}
         overall.update(
-            l2_loss=total_mse_sum / total_n,
+            mse=total_mse,
             l2_loss_normalized=(
-                total_mse_sum / total_n / overall_variance
+                total_mse / overall_variance
                 if overall_variance > 0
-                else total_mse_sum / total_n
+                else total_mse
             ),
             variance_explained=(
-                max(0, 1 - total_mse_sum / total_n / overall_variance)
+                max(0, 1 - total_mse / overall_variance)
                 if overall_variance > 0
                 else 0
             ),
             total_samples=total_n,
+            num_dead_features=feature_is_inactive.sum().item(),
+            perc_dead_features=feature_is_inactive.mean().item()
         )
+        
+        self.timestep_df = pd.DataFrame.from_dict(
+            timestep_metrics, orient='index'
+        )
+        self.timestep_df.reset_index(inplace=True)
+        self.timestep_df.rename(columns={"index": "timestep"}, inplace=True)
+        self.overall_df = pd.DataFrame([overall])
+        
+        self.timestep_df.to_csv(
+            Path(self.output_dir) / "timestep_metrics.csv", index=False
+        )
+        self.overall_df.to_csv(
+            Path(self.output_dir) / "overall_metrics.csv", index=False
+        )
+    
+    def _convert_timestep_to_diffusion_time(
+        self, timestep: int
+    ) -> float:
+        """
+        Convert discrete timestep to normalized diffusion time for plotting.
 
-        return dict(overall=overall, per_timestep=timestep_metrics)
+        Args:
+            timestep (int): The current timestep (1-indexed).
 
-    def _evaluate_features(self) -> pd.DataFrame:
-        raise NotImplementedError("This method is not implemented yet.")
+        Returns:
+            float: Normalized diffusion time in the range [0, 1].
+        """
+        return (timestep - 1) / (self.max_timestep - 1)
+        
+    def _plot_reconstruction(self) -> None:
+        self.timestep_df["diffusion_time"] = (
+            self.timestep_df["timestep"].apply(
+                self._convert_timestep_to_diffusion_time
+            )
+        )
+        
+        metrics = [
+            ('mse', 'MSE'),
+            ('mse_normalized', 'Normalized MSE'),
+            ('variance_explained', 'Fraction of Variance Explained'),
+        ]
+        
+        for metric, label in metrics:
+            fig, ax = plt.subplots(figsize=(10, 6))
+        
+            # Plot the line
+            ax.plot(
+                self.timestep_df['diffusion_time'],
+                self.timestep_df[metric],
+                linewidth=1.5,
+                marker='o',
+                markersize=4,
+                markeredgewidth=0
+            )
+            
+            ax.set_xlabel('Diffusion Time', fontsize=12)
+            ax.set_ylabel(label, fontsize=12)
+            # Reverse x-axis to match diffusion time convention
+            ax.set_xlim(1, 0)
+            ax.set_xticks(np.arange(0, 1.1, 0.2))
+            
+            # Set y-axis to start at 0
+            ax.set_ylim(bottom=0)
+            
+            # Special formatting for R2
+            if metric == 'variance_explained':
+                ax.set_ylim(0, 1)
+                ax.yaxis.set_major_formatter(
+                    plt.FuncFormatter(lambda y, _: f'{y:.0%}')
+                )
+            
+            ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+            ax.set_axisbelow(True)
+            
+            sns.despine()
+            
+            plt.tight_layout()
+            
+            output_path = Path(self.output_dir) / f'timestep_{metric}.pdf'
+            fig.savefig(output_path, dpi=300)
+            plt.close()
+            
+            logger.info(
+                f"Saved {label} plot to {output_path}"
+            )
+            
+    def _evaluate_features(self) -> None:
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        # Shape: (1280, 5120)
+        W_dec = self.sae.W_dec.weight.detach().cpu().numpy()  
+    
+        logger.info(
+            f"Fitting UMAP for Decoder with weight shape: {W_dec.shape}"
+        )
+        reducer = UMAP(
+            n_components=2,
+            metric='cosine', 
+            random_state=42
+        )
+        
+        embedding = reducer.fit_transform(W_dec)  # Shape: (1280, 2)
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        scatter = ax.scatter(
+            embedding[:, 0], 
+            embedding[:, 1],
+            c="#191970",
+            s=10,
+            alpha=0.6
+        )
+        
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Feature Index', fontsize=12)
+        
+        # Labels
+        ax.set_xlabel('UMAP 1', fontsize=12)
+        ax.set_ylabel('UMAP 2', fontsize=12)
+        ax.set_title('UMAP of SAE Features', fontsize=14)
+        
+        ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        ax.set_axisbelow(True)
+        
+        sns.despine()
+        
+        plt.tight_layout()
+        
+        output_path = Path(self.output_dir) / 'decoder_umap.pdf'
+        fig.savefig(output_path, dpi=300)
+        plt.close()
+        
+        logger.info(f"Saved decoder UMAP to {output_path}")
+    
