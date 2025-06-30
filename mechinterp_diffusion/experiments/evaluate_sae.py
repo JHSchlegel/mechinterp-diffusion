@@ -203,7 +203,7 @@ class Evaluator:
         
         self.resolution = resolution
         self.num_samples = num_samples
-        self.sae = sae.to(device)
+        self.sae = sae.to(device = device, dtype=torch.float32)
         self.dataset = dataset
         self.device = torch.device(device)
         self.timesteps = sorted(
@@ -310,7 +310,9 @@ class Evaluator:
             n_total_values = 0
 
             for batch in test_loader:
-                acts = batch["activations"].to(self.device)
+                acts = batch["activations"].to(
+                    dtype=torch.float32, device=self.device
+                )
 
                 output = self.sae(acts)
                 
