@@ -231,10 +231,20 @@ class Evaluator:
 
     def run(self) -> None:
         """Run the evaluation process."""
+        logger.info("-" * 50)
+        logger.info("Starting evaluation".center(50))
+        logger.info("-" * 50)
+        
         self._evaluate_reconstruction()
         self._plot_reconstruction()
         self._evaluate_features()
         self._save_config()
+        
+        
+        logger.info("-" * 50)
+        logger.info("Evaluation Completed".center(50))
+        logger.info("-" * 50)
+        
 
     def _save_config(self) -> None:
         """Save Configuration of Evaluation as JSON."""
