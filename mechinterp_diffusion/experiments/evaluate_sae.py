@@ -2,7 +2,8 @@
 Script for evaluating Sparse Autoencoders (SAEs) on test datasets.
 
 Example usage:
-    python evaluate_sae.py --model_path /path/to/sae \
+    python evaluate_sae.py \
+        --model_path /path/to/sae \
         --dataset_path /path/to/dataset \
         --output_path /path/to/output
 """
@@ -12,13 +13,14 @@ Example usage:
 # =========================================================================== #
 
 
+import os
 import argparse
 import gc
 import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Union, Tuple
+from typing import Dict, Optional, Union, List
 from umap import UMAP
 
 import numpy as np
@@ -69,8 +71,6 @@ PAPER_COLORS = {
 }
 plt.style.use('default')
 
-# TODO: include spatial activation in plotting
-# TODO: density ridges
 # TODO: r2; normalized mse; feature distribution; norms plot
 # TODO: UMAP decoder
 # TODO: Allow for multiple SAEs to be evaluated at once; or maybe save to SAE path? # noqa: E501
@@ -118,6 +118,22 @@ def main() -> None:
         default="aaas",
         help="Color palette to use for plots",
     )
+    
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=100,
+        help="Batch size for evaluation."
+    )
+    
+    parser.add_argument(
+        "spatial_resolution",
+        type=int,
+        nargs=2,
+        default=[16, 16],
+        help="Spatial resolution of latents (height, width)."
+    )
+        
 
     args = parser.parse_args()
     
@@ -138,7 +154,8 @@ def main() -> None:
         dataset=test_dataset,
         device="cuda" if torch.cuda.is_available() else "cpu",
         num_samples=args.num_samples,
-        batch_size=100,
+        resolution=args.spatial_resolution,
+        batch_size=args.batch_size,
         output_dir=args.output_dir,
     )
     evaluator.run()
@@ -156,6 +173,7 @@ class Evaluator:
         dataset: Dataset,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         num_samples: Optional[int] = None,
+        resolution: List[int] = [16, 16],
         batch_size: int = 100,
         output_dir: Union[str, Path] = "../../results/evaluation_results",
     ) -> None:
@@ -176,7 +194,8 @@ class Evaluator:
         assert (
             num_samples is None or num_samples <= len(dataset) // num_timesteps
         ), "num_samples must be less than or equal to number of test examples"
-
+        
+        self.resolution = resolution
         self.num_samples = num_samples
         self.sae = sae.to(device)
         self.dataset = dataset
@@ -201,20 +220,34 @@ class Evaluator:
 
         self.sae.eval()
         
+        self.output_dir = Path(output_dir)
         os.makedirs(output_dir, exist_ok=True)
 
     def run(self) -> None:
         """Run the evaluation process."""
         self._evaluate_reconstruction()
         self._plot_reconstruction()
-        
         self._evaluate_features()
+        self._save_config()
 
-        self._save_results()
-        raise NotImplementedError("This method is not implemented yet.")
-
-    def _save_results(self) -> None:
-        raise NotImplementedError("This method is not implemented yet.")
+    def _save_config(self) -> None:
+        """Save Configuration of Evaluation as JSON."""
+        summary = {
+            "sae_type": self.sae.cfg.sae_type,
+            "sae_path": str(self.sae.cfg.sae_path),
+            "dataset_path": str(self.dataset.info.dataset_path),
+            "num_samples": self.num_samples,
+            "resolution": self.resolution,
+            "num_timesteps": len(self.timesteps),
+            "max_timestep": self.max_timestep
+        }
+        
+        import json
+        with open(self.output_dir / "evaluation_config.json", "w") as f:
+            json.dump(summary, f, indent=4)
+        logger.info(
+            "Saved evaluation configuration."
+        )
 
 
     @torch.no_grad()
@@ -222,6 +255,8 @@ class Evaluator:
         self,
     ) -> None:
         timestep_metrics = {}
+        spatial_acts = {}
+        
         for timestep in tqdm(self.timesteps, desc="Evaluating timesteps"):
             # Get indices for this timestep
             timestep_indices = [
@@ -249,7 +284,7 @@ class Evaluator:
             # -----------------------------------------------------------------
             # Extract Batchwise Statistics
             # -----------------------------------------------------------------
-            stats = {"l2": []}
+            stats = {"l2": [], "full_reconstruct_l2": []}
             act_sum = 0.0
             act_sq_sum = 0.0
             n_total_values = 0
@@ -258,21 +293,29 @@ class Evaluator:
                 acts = batch["activations"].to(self.device)
 
                 output = self.sae(acts)
-
-                # sae_input, info = sae.preprocess_input(acts)
-                # reconstruct = sae.postprocess_output(
-                #     sae.decode(
-                #         torch.nn.functional.relu(sae.encode(sae_input))
-                #     ),
-                #     info,
-                # )
-
-                # Total MSE for this batch
-                batch_mse = (
-                    (output["sae_out"].view_as(acts) - acts).pow(2).sum()
+                
+                # full reconstruction without top-k:
+                sae_input, info = self.sae.preprocess_input(acts)
+                reconstruct = self.sae.postprocess_output(
+                    self.sae.decode(
+                        torch.nn.functional.relu(self.sae.encode(sae_input))
+                    ),
+                    info,
                 )
 
-                stats["l2"].append(batch_mse.detach().cpu().item())
+                # Total MSE for this batch
+                batch_l2 = (
+                    (output["sae_out"].view_as(acts) - acts).pow(2).sum()
+                )
+                
+                batch_l2_full_reconstruct = (
+                    (reconstruct.view_as(acts) - acts).pow(2).sum()
+                )
+
+                stats["l2"].append(batch_l2.detach().cpu().item())
+                stats["full_reconstruct_l2"].append(
+                    batch_l2_full_reconstruct.detach().cpu().item()
+                )
 
                 # Accumulate for variance (across all activation values)
                 act_sum += acts.sum().item()
@@ -289,12 +332,25 @@ class Evaluator:
             mean_act = act_sum / n_total_values
             var = act_sq_sum / n_total_values - mean_act**2
             mse = sum(stats["l2"]) / n_total_values
+            mse_full_reconstruct = (
+                sum(stats["full_reconstruct_l2"]) / n_total_values
+            )
+            
 
             timestep_metrics[timestep] = {}
             timestep_metrics[timestep].update(
                 mse=mse,
                 mse_normalized=mse / var if var > 0 else mse,
                 variance_explained=max(0, 1 - mse / var) if var > 0 else 0,
+                mse_full_reconstruct=mse_full_reconstruct,
+                mse_full_reconstruct_normalized=(
+                    mse_full_reconstruct / var if var > 0 else mse_full_reconstruct
+                ),
+                variance_explained_full_reconstruct=(
+                    max(0, 1 - mse_full_reconstruct / var)
+                    if var > 0
+                    else 0
+                ),
                 activation_variance=var,
                 activation_mean=mean_act,
                 activation_sum=act_sum,
@@ -389,6 +445,9 @@ class Evaluator:
             ('mse', 'MSE'),
             ('mse_normalized', 'Normalized MSE'),
             ('variance_explained', 'Fraction of Variance Explained'),
+            ('mse_full_reconstruct', 'MSE'),
+            ('mse_full_reconstruct_normalized', 'Normalized MSE'),
+            ('variance_explained_full_reconstruct', 'Fraction of Variance Explained'),  # noqa: E501
         ]
         
         for metric, label in metrics:
