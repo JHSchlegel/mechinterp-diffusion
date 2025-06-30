@@ -297,9 +297,7 @@ class SpatialVisualizer:
                 for t in self.timesteps:
                     data[t] = {
                         "spatial_mean" : f["t{t}/mean"][:],
-                        "values_sample": f["t{t}/values"][:],
-                        "sparsity": f[f"t{t}/sparsity"][:],
-                        "l0": f[f"t{t}/l0"][:],
+                        # "values_sample": f["t{t}/values"][:],
                         "spatial_nonzeros": f[f"t{t}/spatial_nonzeros"][:],
                         
                     }
@@ -382,24 +380,32 @@ class SpatialVisualizer:
                 
                 # [h, w]
                 spatial_mean = sae_acts_spatial.mean(dim = (0, 1)).cpu().numpy() 
-                
-                # TODO: fix this here
-                
+                spatial_nonzeros = (sae_acts_spatial > 0.0).sum(dim=(0, -1)).item()
+                                
                 # Update running statistics:
                 if data[timestep]["count"] == 0:
                     data[timestep]["spatial_mean"] = spatial_mean
+                    data[timestep]["spatial_nonzeros"] = spatial_nonzeros
                 else:
                     n = data[timestep]["count"]
                     data[timestep]["spatial_mean"] = (
                         data[timestep]["spatial_mean"] * n
                         + spatial_mean
                     ) / (n + bs)
+                    data[timestep]["spatial_nonzeros"] = (
+                        data[timestep]["spatial_nonzeros"] * n
+                        + spatial_nonzeros
+                    ) / (n + bs)
+                    
                 
                 
                 data[timestep]
                 data[timestep]["count"] += bs
+                feature_np = sae_acts_spatial.permute(3, 0, 1, 2).cpu().numpy()
+                feature_stats["sum"] += feature_np.sum(axis=1)  # [d_sae, h, w]
+                feature_stats["sum_sq"] += (feature_np ** 2).sum(axis=1) # [d_sae, h, w]
+                feature_stats["count"] += bs
                 
-    
                 # Clear GPU periodically
                 if batch_idx > 0 and batch_idx % 10 == 0:
                     torch.cuda.empty_cache()
@@ -435,15 +441,10 @@ class SpatialVisualizer:
                 group.create_dataset(
                     "mean", data=data[t]["spatial_mean"]
                 )
-                group.create_dataset(
-                    "values", data=np.array(data[t]["values_sample"])
-                )
-                group.create_dataset(
-                    "sparsity", data=np.array(data[t]["nonzero_count"]) / h / w
-                )
-                group.create_dataset(
-                    "l0", data=np.array(data[t]["nonzero_count"])
-                )
+                # group.create_dataset(
+                #     "values", data=np.array(data[t]["values_sample"])
+                # )
+
                 group.create_dataset(
                     "spatial_nonzeros", data=data[t]["spatial_nonzeros"]
                 )
