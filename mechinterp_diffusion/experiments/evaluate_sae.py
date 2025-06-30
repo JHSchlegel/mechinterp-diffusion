@@ -177,17 +177,23 @@ class Evaluator:
         batch_size: int = 100,
         output_dir: Union[str, Path] = "../../results/evaluation_results",
     ) -> None:
-        """_summary_
-
+        """
+        Initialize the Evaluator for Sparse Autoencoders (SAEs).
+        
         Args:
-            sae (BaseSAE): _description_
-            dataset (Dataset): _description_
-            device (str, optional): _description_. Defaults to "cuda" if it is
-                available, otherwise "cpu".
-            num_samples (Optional[int], optional): _description_. Defaults to
-                None.
+            sae (BaseSAE): Sparse Autoencoder to evaluate.
+            dataset (Dataset): Test dataset in Hugging Face format.
+            device (str, optional): Device to run evaluaiton on. Defaults to 
+                "cuda" if it is available, otherwise "cpu".
+            num_samples (Optional[int], optional): Number of test samples to 
+                use for evaluation. Defaults to None.
+            resolution (List[int], optional): Spatial resolution of the latents
+                (height, width). Defaults to [16, 16].
             batch_size (int, optional): Batch size to use for test loaders.
                 Defaults to 100.
+            output_dir (Union[str, Path], optional): Directory to save the
+                evaluation results. Defaults to 
+                "../../results/evaluation_results".
         """
         num_timesteps = len(np.unique(dataset["timestep"]))
         self.max_timestep = max(dataset["timestep"]).item()
@@ -254,6 +260,10 @@ class Evaluator:
     def _evaluate_reconstruction(
         self,
     ) -> None:
+        """
+        Evaluate the reconstruction performance of the SAE across all
+        timesteps.
+        """
         timestep_metrics = {}
         spatial_acts = {}
         
@@ -344,7 +354,7 @@ class Evaluator:
                 variance_explained=max(0, 1 - mse / var) if var > 0 else 0,
                 mse_full_reconstruct=mse_full_reconstruct,
                 mse_full_reconstruct_normalized=(
-                    mse_full_reconstruct / var if var > 0 else mse_full_reconstruct
+                    mse_full_reconstruct / var if var > 0 else mse_full_reconstruct # noqa: E501
                 ),
                 variance_explained_full_reconstruct=(
                     max(0, 1 - mse_full_reconstruct / var)
@@ -506,7 +516,7 @@ class Evaluator:
         )
         reducer = UMAP(
             n_components=2,
-            metric='cosine', 
+            metric="cosine", 
             random_state=42
         )
         
