@@ -32,6 +32,7 @@ from typing import Dict, List, Optional, Tuple, Union
 # Caching:
 import h5py
 import numpy as np
+import seaborn as sns
 import torch
 import torch.nn.functional as F
 from datasets import Dataset, load_from_disk
@@ -262,8 +263,8 @@ class SpatialVisualizer:
         # Create visualizations
         logger.info("Creating visualizations...")
         self._plot_aggregated_patterns(time_data)
-        self._plot_density_ridges(time_data)
         self._plot_spatial_evolution(time_data)
+        self._plot_density_ridges(time_data)
         self._plot_top_features(features_data)
 
         # Save summary
@@ -282,7 +283,64 @@ class SpatialVisualizer:
     def _plot_spatial_evolution(
         self, data: Dict[int, Dict[str, np.ndarray]]
     ) -> None:
-        raise NotImplementedError()
+        timesteps = sorted(data.keys())
+
+        # Select timesteps to show
+        t_indices = np.linspace(0, len(timesteps) - 1, 8, dtype=int)
+        selected_timesteps = [timesteps[i] for i in t_indices]
+
+        # Create raw version only (no smoothing)
+        fig = plt.figure(figsize=(16, 4))
+        gs = GridSpec(1, len(selected_timesteps), hspace=0.3, wspace=0.1)
+
+        # Create custom colormap
+        colors = [
+            "#0d1117",
+            "#1e3a5f",
+            "#4a7ba7",
+            "#8fc3e9",
+            "#ffd700",
+        ]
+        cmap = sns.blend_palette(colors, n_colors=100, as_cmap=True)
+
+        # Get consistent scaling across all timesteps
+        all_means = [data[t]["mean"] for t in selected_timesteps]
+        vmax = max(arr.max() for arr in all_means)
+
+        # Raw (no interpolation, no smoothing)
+        for j, timestep in enumerate(selected_timesteps):
+            ax = fig.add_subplot(gs[0, j])
+
+            spatial_pattern = data[timestep]["mean"]  # [H, W]
+
+            im = ax.imshow(
+                spatial_pattern,
+                cmap=cmap,
+                vmin=0,
+                vmax=vmax,
+                interpolation="nearest",  # Raw pixels
+            )
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            diffusion_time = self._convert_timestep_to_diffusion_time(timestep)
+            ax.set_title(f"{diffusion_time:.2f}", fontsize=12)
+
+            # Add border
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#cccccc")
+                spine.set_linewidth(0.5)
+
+        # Single colorbar
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+        cbar = plt.colorbar(im, cax=cbar_ax)
+        cbar.set_label("Mean Activation Strength", fontsize=12)
+
+        save_path = self.output_dir / "spatial_evolution.pdf"
+
+        plt.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
+        plt.close()
 
     def _plot_aggregated_patterns(
         self, data: Dict[int, Dict[str, np.ndarray]]
