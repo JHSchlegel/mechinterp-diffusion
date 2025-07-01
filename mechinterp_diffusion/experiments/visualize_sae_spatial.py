@@ -250,6 +250,9 @@ class SpatialVisualizer:
         self.run_activation_extraction = (
             not load_from_cache or not self.cache_file.exists()
         )
+        ic(load_from_cache)
+        ic(self.run_activation_extraction)
+        ic(self.cache_file.exists())
 
     def run(self) -> None:
         """Run the visualization pipeline."""
@@ -304,14 +307,14 @@ class SpatialVisualizer:
         cmap = sns.blend_palette(colors, n_colors=100, as_cmap=True)
 
         # Get consistent scaling across all timesteps
-        all_means = [data[t]["mean"] for t in selected_timesteps]
+        all_means = [data[t]["spatial_mean"] for t in selected_timesteps]
         vmax = max(arr.max() for arr in all_means)
 
         # Raw (no interpolation, no smoothing)
         for j, timestep in enumerate(selected_timesteps):
             ax = fig.add_subplot(gs[0, j])
 
-            spatial_pattern = data[timestep]["mean"]  # [H, W]
+            spatial_pattern = data[timestep]["spatial_mean"]  # [H, W]
 
             im = ax.imshow(
                 spatial_pattern,
@@ -397,6 +400,7 @@ class SpatialVisualizer:
         """
         self.sae.eval()
         if not self.run_activation_extraction:
+            logger.info(f"Loading cached activations from {self.cache_file}")
             time_data = {}
             with h5py.File(self.cache_file, "r") as f:
                 for t in self.timesteps:
@@ -417,7 +421,6 @@ class SpatialVisualizer:
                 }
             return time_data, features_data
 
-        logger.info(f"Loading cached activations from {self.cache_file}")
         h, w = self.resolution
         data = {
             t: {
