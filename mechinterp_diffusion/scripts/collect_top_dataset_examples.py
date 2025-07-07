@@ -20,7 +20,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -65,8 +65,11 @@ def main() -> None:
 class TopExamplesConfig(Serializable):
     """Configuration for extracting top examples for SAE features."""
 
-    sae_path: str
-    """Path to the SAE model checkpoint."""
+    target_modules: List[str] = field(default_factory=list)
+    """List of target modules to hook into. Can be specified multiple times"""
+
+    sae_paths: List[str] = field(default_factory=list)
+    """List of paths to SAE models. Must match the order of --target_modules"""
 
     model_id: str = "stabilityai/stable-diffusion-2-1"
     """Hugging Face model ID for the diffusion model."""
@@ -125,6 +128,17 @@ class TopExamplesConfig(Serializable):
     temporal_aggregation: str = "max"
     """Temporal aggregation method: 'max' or 'mean'."""
 
+    def __post_init__(self) -> None:
+        """Post-initialization checks and setup."""
+        if len(self.sae_paths) != len(self.target_modules):
+            raise ValueError(
+                "Number of SAE paths must match number of target modules."
+            )
+
+        self.sae_config = dict(
+            zip(self.target_modules, self.sae_paths, strict=False)
+        )
+
 
 # =========================================================================== #
 #                       Top Examples Extraction Class                         #
@@ -147,13 +161,18 @@ class TopExamplesExtractor:
         # ---------------------------------------------------------------------
         # Initialize SAE and Diffusion Pipeline
         # ---------------------------------------------------------------------
-        logger.info(f"Loading SAE model from {config.sae_path}")
-        self.sae = TopKSAE.load_from_disk(
-            path_str=config.sae_path,
-            config_class=TopKSAEConfig,
-            device=config.device,
-        ).to(dtype=self.torch_dtype)
-        self.sae.eval()
+        self.saes: Dict[str, TopKSAE] = {}
+        for target_module, sae_path in self.config.sae_config.items():
+            logger.info(
+                f"Loading SAE for module '{target_module}' from {sae_path}"
+            )
+            sae = TopKSAE.load_from_disk(
+                path_str=sae_path,
+                config_class=TopKSAEConfig,
+                device=config.device,
+            ).to(dtype=self.torch_dtype)
+            sae.eval()
+            self.saes[target_module] = sae
 
         self.pipe = HookedStableDiffusionPipeline.from_pretrained(
             config.model_id,
@@ -171,10 +190,16 @@ class TopExamplesExtractor:
         # ---------------------------------------------------------------------
         # Initialize feature tracking
         # ---------------------------------------------------------------------
-        self.features_to_process = self._get_features_to_process()
-        self.feature_examples = {
-            feature_idx: [] for feature_idx in self.features_to_process
-        }
+        self.features_to_process: Dict[str, List[int]] = {}
+        self.feature_examples: Dict[str, Dict[int, List]] = {}
+        for target_module, sae in self.saes.items():
+            self.features_to_process[target_module] = (
+                self._get_features_to_process(sae)
+            )
+            self.feature_examples[target_module] = {
+                feature_idx: []
+                for feature_idx in self.features_to_process[target_module]
+            }
         self.example_counter = 0  # for heap tie breakign
 
     def _setup_output_dirs(self) -> None:
@@ -185,28 +210,20 @@ class TopExamplesExtractor:
             f"top_examples_{now}",
         )
 
-        self.grids_dir = os.path.join(self.save_dir, "grids")
-        self.individual_dir = os.path.join(
-            self.save_dir, "individual_examples"
-        )
-        self.metadata_dir = os.path.join(self.save_dir, "metadata")
-
         os.makedirs(self.save_dir, exist_ok=True)
-        os.makedirs(self.grids_dir, exist_ok=True)
-        os.makedirs(self.metadata_dir, exist_ok=True)
 
-        if self.config.save_individual_examples:
-            os.makedirs(self.individual_dir, exist_ok=True)
-
-    def _get_features_to_process(self) -> List[int]:
+    def _get_features_to_process(self, sae: TopKSAE) -> List[int]:
         """Determine which features to process based on configuration.
+
+        Args:
+            sae (TopKSAE): The SAE instance.
 
         Returns:
             List[int]: List of feature indices to process.
         """
         if self.config.features_to_process:
             return self.config.features_to_process
-        return list(range(self.sae.d_sae))
+        return list(range(sae.d_sae))
 
     def _load_dataset(self) -> Dataset:
         """Load the prompt dataset.
@@ -314,12 +331,15 @@ class TopExamplesExtractor:
             for seed in meta_seeds
         ]
 
+        # Cache activations from ALL modules at once for massive speedup
+        target_modules = list(self.config.sae_config.keys())
+
         # ---------------------------------------------------------------------
         # Cache Activations from the target module
         # ---------------------------------------------------------------------
         images, cache = self.pipe.run_with_cache(
             prompt=meta_prompts,
-            positions_to_cache=[self.config.target_module],
+            positions_to_cache=list(target_modules),
             num_inference_steps=self.config.num_inference_steps,
             generator=generators,
             guidance_scale=self.config.guidance_scale,
@@ -329,77 +349,66 @@ class TopExamplesExtractor:
             width=self.config.width,
         )
 
-        if self.config.output_or_diff == "diff":
-            output = (
-                cache["output"][self.config.target_module]
-                - cache["input"][self.config.target_module]
-            )
-        else:
-            output = cache["output"][self.config.target_module]
+        for target_module, sae in self.saes.items():
+            if self.config.output_or_diff == "diff":
+                output = (
+                    cache["output"][target_module]
+                    - cache["input"][target_module]
+                )
+            else:
+                output = cache["output"][target_module]
 
-        meta_bs, timesteps, spatial_dim, _ = output.shape
+            meta_bs, timesteps, spatial_dim, _ = output.shape
+            # don't use vectorized processing when using batch topk
+            # this way we don't have leakage
+            if sae.cfg.use_batch_topk:
+                all_feature_activations = []
+                for b in range(meta_bs):
+                    ex = output[b]
+                    timestep_feature_maps = []
+                    for t in range(timesteps):
+                        timestep_output = ex[t]
+                        sae_input, _ = sae.preprocess_input(timestep_output)
+                        feature_acts, _ = sae._get_topk(
+                            torch.relu(sae.encode(sae_input.to(self.device)))
+                        )
+                        timestep_feature_maps.append(feature_acts)
+                    stacked_maps = torch.stack(timestep_feature_maps)
+                    all_feature_activations.append(stacked_maps)
+                batch_feature_maps = torch.stack(all_feature_activations)
+            # if not using batch topk, we can vectorize
+            else:
+                output_reshaped = output.view(
+                    meta_bs * timesteps, spatial_dim, sae.d_in
+                )
+                sae_input, _ = sae.preprocess_input(output_reshaped)
+                feature_acts, _ = sae._get_topk(
+                    torch.relu(sae.encode(sae_input.to(self.device)))
+                )
+                batch_feature_maps = feature_acts.view(
+                    meta_bs, timesteps, spatial_dim, sae.d_sae
+                )
 
-        # don't use vectorized processing when using batch topk
-        # this way we don't have leakage
-        if self.sae.cfg.use_batch_topk:
-            all_feature_activations = []
-            for b in range(meta_bs):
-                # Extract activations for this example
-                ex = output[b]  # [timesteps, spatial, channels]
-
-                timestep_feature_maps = []
-                # For each timestep, process through SAE
-                for t in range(timesteps):
-                    timestep_output = ex[t]  # [spatial, channels]
-
-                    sae_input, _ = self.sae.preprocess_input(timestep_output)
-                    feature_acts, _ = self.sae._get_topk(
-                        torch.relu(self.sae.encode(sae_input.to(self.device)))
-                    )
-
-                    timestep_feature_maps.append(feature_acts)
-
-                # [timesteps, spatial, d_sae]
-                stacked_maps = torch.stack(timestep_feature_maps)
-                all_feature_activations.append(stacked_maps)
-
-            # [meta_bs, timesteps, spatial, d_sae]
-            batch_feature_maps = torch.stack(all_feature_activations)
-
-        # use vectorized processing
-        else:
-            output = output.view(
-                meta_bs * timesteps, spatial_dim, self.sae.d_in
-            )
-            sae_input, _ = self.sae.preprocess_input(output)
-            feature_acts, _ = self.sae._get_topk(
-                torch.relu(self.sae.encode(sae_input.to(self.device)))
+            batch_agg_activations, batch_max_timesteps = (
+                self._compute_feature_activation_strength(batch_feature_maps)
             )
 
-            # reshape to  [meta_bs, timesteps, spatial, d_sae]
-            batch_feature_maps = feature_acts.view(
-                meta_bs, timesteps, spatial_dim, self.sae.d_sae
-            )
-
-        batch_agg_activations, batch_max_timesteps = (
-            self._compute_feature_activation_strength(batch_feature_maps)
-        )
-
-        # Update top examples for each example in batch
-        for i in range(meta_bs):
-            original_prompt_idx_in_batch = i // self.config.number_of_seeds
-            self._update_top_examples(
-                prompt=prompts[original_prompt_idx_in_batch],
-                prompt_idx=prompt_indices[original_prompt_idx_in_batch],
-                image=images[i],
-                agg_activations=batch_agg_activations[i],
-                max_timesteps=batch_max_timesteps[i],
-                feature_maps=batch_feature_maps[i],
-                seed=meta_seeds[i],
-            )
+            for i in range(meta_bs):
+                original_prompt_idx = i // self.config.number_of_seeds
+                self._update_top_examples(
+                    target_module=target_module,
+                    prompt=prompts[original_prompt_idx],
+                    prompt_idx=prompt_indices[original_prompt_idx],
+                    image=images[i],
+                    agg_activations=batch_agg_activations[i],
+                    max_timesteps=batch_max_timesteps[i],
+                    feature_maps=batch_feature_maps[i],
+                    seed=meta_seeds[i],
+                )
 
     def _update_top_examples(
         self,
+        target_module: str,
         prompt: str,
         prompt_idx: int,
         image: Image.Image,
@@ -411,6 +420,7 @@ class TopExamplesExtractor:
         """Update the tracking of top examples for each feature.
 
         Args:
+            target_module (str): Target module name.
             prompt (str): Text prompt used.
             prompt_idx (int): Index of the prompt.
             image (Image.Image): Generated image.
@@ -420,18 +430,20 @@ class TopExamplesExtractor:
             feature_maps (torch.Tensor): Feature activation maps.
             generator_seed (int): Seed used for generation.
         """
-        for feature_idx in self.features_to_process:
+        for feature_idx in self.features_to_process[target_module]:
             activation = agg_activations[feature_idx].item()
+            heap = self.feature_examples[target_module][feature_idx]
 
-            heap = self.feature_examples[feature_idx]
-
-            max_t = max_timesteps[feature_idx].item()
+            max_t_idx = max_timesteps[feature_idx].item()
             feature_map_at_max_t = (
-                feature_maps[max_t, :, feature_idx].detach().cpu()
+                feature_maps[max_t_idx, :, feature_idx].detach().cpu()
             )
 
-            max_t = self.scheduler_timesteps[max_t]
-            max_diffusion_t = self._convert_timestep_to_diffusion_time(max_t)
+            # Convert step index to actual scheduler timestep
+            max_t_val = self.scheduler_timesteps[max_t_idx].item()
+            max_diffusion_t = self._convert_timestep_to_diffusion_time(
+                max_t_val
+            )
 
             example_info = {
                 "prompt": prompt,
@@ -443,7 +455,6 @@ class TopExamplesExtractor:
                 "seed": seed,
             }
 
-            # Heaps for efficient top-k management
             if len(heap) < self.config.num_examples_per_feature:
                 heapq.heappush(
                     heap, (activation, self.example_counter, example_info)
@@ -459,33 +470,66 @@ class TopExamplesExtractor:
         """Sort final top examples and and save visualizations."""
         logger.info("Filtering top examples and creating visualizations...")
 
-        for feature_idx in tqdm(
-            self.features_to_process, desc="Saving feature visualizations"
-        ):
-            heap = self.feature_examples[feature_idx]
-            top_examples = sorted(
-                [item[2] for item in heap],
-                key=lambda x: x["activation"],
-                reverse=True,
-            )
+        for target_module in self.config.sae_config.keys():
+            logger.info(f"--- Processing module: {target_module} ---")
 
-            # -----------------------------------------------------------------
-            # Visualization and saving
-            # -----------------------------------------------------------------
-            self._create_feature_grid(feature_idx, top_examples)
-            if self.config.save_individual_examples:
-                self._save_individual_examples(feature_idx, top_examples)
+            module_features = self.features_to_process[target_module]
 
-            self._save_feature_metadata(feature_idx, top_examples)
+            for feature_idx in tqdm(
+                module_features,
+                desc=f"Saving visualizations for {target_module}",
+            ):
+                heap = self.feature_examples[target_module][feature_idx]
+                top_examples = sorted(
+                    [item[2] for item in heap],
+                    key=lambda x: x["activation"],
+                    reverse=True,
+                )
+
+                # -------------------------------------------------------------
+                # Visualize and save top examples
+                # -------------------------------------------------------------
+                self._create_feature_grid(
+                    target_module, feature_idx, top_examples
+                )
+                if self.config.save_individual_examples:
+                    self._save_individual_examples(
+                        target_module, feature_idx, top_examples
+                    )
+                self._save_feature_metadata(
+                    target_module, feature_idx, top_examples
+                )
+
+    def _get_and_create_module_dir(
+        self, target_module: str, subfolder: str
+    ) -> str:
+        """Helper to create and return path for a module's output subfolder.
+
+        Args:
+            target_module (str): Target module name.
+            subfolder (str): Subfolder name (e.g., "grids", "individual
+                "metadata").
+
+        Returns:
+            str: Path to the module's output subfolder.
+        """
+        sanitized_module_name = target_module.replace(".", "_")
+        module_dir = os.path.join(
+            self.save_dir, sanitized_module_name, subfolder
+        )
+        os.makedirs(module_dir, exist_ok=True)
+        return module_dir
 
     def _create_feature_grid(
         self,
+        target_module: str,
         feature_idx: int,
         examples: List[Dict[str, Any]],
     ) -> None:
         """Create grid visualization of top examples for a feature.
 
         Args:
+            target_module (str): Target module name.
             feature_idx (int): Feature index.
             examples (List[Dict[str, Any]]): List of example information.
         """
@@ -541,7 +585,8 @@ class TopExamplesExtractor:
 
         fig.subplots_adjust(wspace=0.05, hspace=0)
 
-        grid_path = os.path.join(self.grids_dir, f"feature_{feature_idx}.jpg")
+        grids_dir = self._get_and_create_module_dir(target_module, "grids")
+        grid_path = os.path.join(grids_dir, f"feature_{feature_idx}.jpg")
         plt.savefig(
             grid_path,
             dpi=300,
@@ -552,18 +597,21 @@ class TopExamplesExtractor:
 
     def _save_individual_examples(
         self,
+        target_module: str,
         feature_idx: int,
         examples: List[Dict[str, Any]],
     ) -> None:
         """Save individual examples for a feature.
 
         Args:
+            target_module (str): Target module name.
             feature_idx (int): Feature index.
             examples (List[Dict[str, Any]]): List of example information.
         """
-        feature_dir = os.path.join(
-            self.individual_dir, f"feature_{feature_idx}"
+        individual_dir = self._get_and_create_module_dir(
+            target_module, "individual_examples"
         )
+        feature_dir = os.path.join(individual_dir, f"feature_{feature_idx}")
         os.makedirs(feature_dir, exist_ok=True)
 
         for i, example in enumerate(examples):
@@ -631,12 +679,14 @@ class TopExamplesExtractor:
 
     def _save_feature_metadata(
         self,
+        target_module: str,
         feature_idx: int,
         examples: List[Dict[str, Any]],
     ) -> None:
         """Save metadata for a feature's top examples.
 
         Args:
+            target_module (str): Target module name.
             feature_idx (int): Feature index.
             examples (List[Dict[str, Any]]): List of example information.
         """
@@ -654,8 +704,11 @@ class TopExamplesExtractor:
             ],
         }
 
+        metadata_dir = self._get_and_create_module_dir(
+            target_module, "metadata"
+        )
         metadata_path = os.path.join(
-            self.metadata_dir, f"feature_{feature_idx}.json"
+            metadata_dir, f"feature_{feature_idx}.json"
         )
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=4)
