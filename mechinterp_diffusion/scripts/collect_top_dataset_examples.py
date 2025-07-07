@@ -504,7 +504,7 @@ class TopExamplesExtractor:
         axes = axes.flatten()
 
         axes[0].set_ylabel(
-            f"Feature\n{feature_idx}",
+            f"Feature {feature_idx}",
             fontsize=14,
             fontweight="bold",
             rotation=0,
@@ -521,9 +521,23 @@ class TopExamplesExtractor:
             )
             ax.imshow(np.array(overlay.convert("RGB")))
 
-            ax.set_title(f"t={example['timestep']}", fontsize=10)
+            ax.set_title(f"$t_{{max}}=${example['timestep']}", fontsize=10)
 
-            ax.axis("off")
+            if i == 0:
+                # For the first plot, keep the ylabel visible but hide
+                # ticks/spines
+                ax.spines[["top", "right", "bottom", "left"]].set_visible(
+                    False
+                )
+                ax.tick_params(
+                    left=False,
+                    bottom=False,
+                    labelleft=False,
+                    labelbottom=False,
+                )
+            else:
+                # For all other plots, turn the axis off completely
+                ax.axis("off")
 
         fig.subplots_adjust(wspace=0.05, hspace=0)
 
@@ -633,7 +647,7 @@ class TopExamplesExtractor:
                     "prompt": ex["prompt"],
                     "prompt_idx": ex["prompt_idx"],
                     "activation": ex["activation"],
-                    "timestep": ex["timestep"],
+                    "timestep": ex["timestep"].item(),
                     "seed": ex["seed"],
                 }
                 for ex in examples
