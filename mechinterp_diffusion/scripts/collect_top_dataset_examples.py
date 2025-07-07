@@ -54,11 +54,7 @@ DTYPE_MAP = {"float16": torch.float16, "float32": torch.float32}
 def main() -> None:
     """Main function to extract and visualize top examples for SAE features."""
     args = parse(TopExamplesConfig)
-
-    # Create extractor with parsed config
     extractor = TopExamplesExtractor(args)
-
-    # Run extraction
     extractor.run()
 
 
