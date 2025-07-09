@@ -1,5 +1,7 @@
 """
-This module implements SAE-based interventions for diffusion models.
+This module implements SAE-based interventions for diffusion models. It allows
+for different types of interventions (add, scale, reconstruct) on specific
+features of the SAE model during specific timesteps of the diffusion process.
 
 
 Example usage:
@@ -10,37 +12,40 @@ python intervene_sae.py --hoook_type scale --feature_idx 1674 --value 5.0
 # =========================================================================== #
 #                           Packages and Presets                              #
 # =========================================================================== #
+
 import dataclasses
 import json
 import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datasets import load_from_disk
 from matplotlib.colors import ListedColormap
 from PIL import Image
 from simple_parsing import parse
 from torch import Tensor
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from config import SAEInterventionConfig, TopKSAEConfig
-from diffusion.hooked_sd_pipeline import HookedStableDiffusionPipeline
-from sae.topk_sae import TopKSAE
-from utils.hooks import (
+from core.diffusion.hooked_sd_pipeline import HookedStableDiffusionPipeline
+from core.sae.topk_sae import TopKSAE
+from core.utils.hooks import (
     EnhancedTimedHook,
     TimedHook,
     add_feature_hook,
     reconstruct_sae_hook,
     scale_feature_hook,
 )
-from utils.reproducibility import set_all_seeds
+from core.utils.reproducibility import set_all_seeds
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,12 +53,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DTYPE_MAP = {
+    "float16": torch.float16,
+    "float32": torch.float32,
+}
+
 
 # =========================================================================== #
 #                              Main Functionality                             #
 # =========================================================================== #
 def main() -> None:
-    """Main entry point for the script."""
+    """Main function for interventions."""
     config = parse(SAEInterventionConfig)
     manager = SAEInterventionManager(config)
     manager.run()
@@ -77,22 +87,60 @@ class SAEInterventionManager:
             config: Configuration for the intervention process
         """
         self.config = config
+        assert self.config.hook_type in ["add", "scale", "reconstruct"], (
+            f"Invalid hook type: {self.config.hook_type}. Must be one of "
+            "'add', 'scale', or 'reconstruct'."
+        )
+
+        assert self.config.hook_type != "reconstruct" or not (
+            self.timesteps or self.timestep_values
+        ), (
+            "Reconstruction hooks do not support timesteps or timestep values."
+            " Please set `timesteps` and `timestep_values` to None."
+        )
+
+        assert self.config.intervention_mode in [
+            "grid",
+            "trajectory",
+            "topk_trace",
+        ], (
+            f"Invalid intervention mode: {self.config.intervention_mode}. "
+            "Must be one of 'grid', 'trajectory', or 'topk_trace'."
+        )
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.torch_dtype = self._get_torch_dtype(config.torch_dtype)
+        self.torch_dtype = DTYPE_MAP.get(config.torch_dtype, torch.float32)
         self.sae_type = config.sae_path.split("_")[0].split("/")[-1]
         logging.info(f"SAE type: {self.sae_type}")
 
-        self.sae_model = self._load_sae_model()
+        self.sae_model = TopKSAE.load_from_disk(
+            self.config.sae_path,
+            config_class=TopKSAEConfig,
+            device=self.device,
+        ).to(dtype=self.torch_dtype)
+
         self.pipe = HookedStableDiffusionPipeline.from_pretrained(
             self.config.model_id,
             torch_dtype=self.torch_dtype,
             safety_checker=None,
         ).to(self.device)
 
-        self._setup_output_dirs()
-        self._save_config()
+        self.pipe.scheduler.set_timesteps(
+            self.config.num_inference_steps, device="cpu"
+        )
+        self.scheduler_timesteps = self.pipe.scheduler.timesteps.to(
+            self.device
+        )
+
+        self.scheduler_timesteps = self.pipe.scheduler.timesteps.to(
+            self.device
+        )
+
         self.timesteps = self.config.timesteps
         self.timestep_values = self.config.timestep_values
+
+        self._setup_output_dirs()
+        self._save_config()
 
     def run(self) -> None:
         """Run the SAE intervention experiment based on configuration."""
@@ -104,20 +152,10 @@ class SAEInterventionManager:
                 self.run_grid_mode(prompts)
             case "trajectory":
                 self.run_trajectory_mode(prompts)
+            case "topk_trace":
+                self.run_topk_trace_mode(prompts)
 
-        logger.info(f"Done! Results saved to {self.save_dir}")
-
-    def _get_torch_dtype(self, dtype_str: str) -> torch.dtype:
-        """Convert string dtype to torch dtype.
-
-        Args:
-            dtype_str (str): String representation of dtype
-
-        Returns:
-            torch.dtype: The corresponding torch dtype
-        """
-        dtype_map = {"float16": torch.float16, "float32": torch.float32}
-        return dtype_map.get(dtype_str, torch.float32)
+        logger.info(f"Results saved to {self.save_dir}")
 
     def _setup_output_dirs(self) -> None:
         """Create output directories based on current configuration."""
@@ -134,6 +172,8 @@ class SAEInterventionManager:
                 prefix = "grid"
             case "trajectory":
                 prefix = "trajectory"
+            case "topk_trace":
+                prefix = "topk_trace"
 
         self.save_dir = os.path.join(
             self.config.output_dir,
@@ -142,30 +182,25 @@ class SAEInterventionManager:
 
         os.makedirs(self.save_dir, exist_ok=True)
 
+    def _convert_timestep_to_diffusion_time(
+        self, timestep: int | torch.Tensor
+    ) -> float | torch.Tensor:
+        """
+        Convert discrete timestep to normalized diffusion time for plotting.
+
+        Args:
+            timestep (int): The current timestep (1-indexed).
+
+        Returns:
+            float: Normalized diffusion time in the range [0, 1].
+        """
+        return (timestep - 1) / (max(self.scheduler_timesteps) - 1)
+
     def _save_config(self) -> None:
         """Save configuration to a JSON file for reproducibility."""
         config_dict = dataclasses.asdict(self.config)
         with open(os.path.join(self.save_dir, "config.json"), "w") as f:
             json.dump(config_dict, f, indent=4)
-
-    def _load_sae_model(self) -> TopKSAE:
-        """Load the SAE model from the specified path.
-
-        Returns:
-            TopKSAE: Loaded SAE model
-        """
-        match self.sae_type:
-            case "TopKSAE":
-                logger.info(
-                    f"Loading TopK SAE model from {self.config.sae_path}"
-                )
-                return TopKSAE.load_from_disk(
-                    self.config.sae_path,
-                    config_class=TopKSAEConfig,
-                    device=self.device,
-                ).to(dtype=self.torch_dtype)
-            case _:
-                raise ValueError(f"Unknown SAE type: {self.sae_type}")
 
     def _load_prompts(self) -> List[str]:
         """Load prompts from specified dataset or use provided prompt.
@@ -173,20 +208,21 @@ class SAEInterventionManager:
         Returns:
             List[str]: List of prompts to use for image generation
         """
-        dataset = load_from_disk(self.config.dataset_path)
-        dataset_split = dataset[self.config.dataset_split].shuffle(
-            seed=self.config.seed
-        )
-        logger.info(f"Loaded dataset with {len(dataset_split)} examples")
-
         prompts = []
-        for i in range(min(self.config.num_prompts, len(dataset_split))):
-            prompt_entry = dataset_split[i]
-            prompts.append(prompt_entry[self.config.prompt_column])
+        if not self.config.prompts:
+            dataset = load_from_disk(self.config.dataset_path)
+            dataset_split = dataset[self.config.dataset_split]
+            logger.info(f"Loaded dataset with {len(dataset_split)} examples")
+            for i in range(min(self.config.num_prompts, len(dataset_split))):
+                prompt_entry = dataset_split[i]
+                prompts.append(prompt_entry[self.config.prompt_column])
+        else:
+            for prompt in self.config.prompts:
+                prompts.append(prompt)
 
         return prompts
 
-    def locate_module(self, position: str) -> nn.Module:
+    def _locate_module(self, position: str) -> nn.Module:
         """Locate a module in the pipeline by its position string.
 
         Args:
@@ -203,7 +239,7 @@ class SAEInterventionManager:
                 block = getattr(block, step)
         return block
 
-    def register_sae_hook(
+    def _register_sae_hook(
         self,
         target_module: str,
         feature_idx: int,
@@ -228,26 +264,29 @@ class SAEInterventionManager:
         Returns:
             Any: Hook handle that can be removed later
         """
-        module = self.locate_module(target_module)
+        module = self._locate_module(target_module)
 
-        if hook_type == "add":
-            core_operation = lambda m, i, o: add_feature_hook(  # noqa: E731
-                self.sae_model, feature_idx, value, m, i, o
-            )
-        elif hook_type == "scale":
-            core_operation = lambda m, i, o: scale_feature_hook(  # noqa: E731
-                self.sae_model, feature_idx, value, m, i, o
-            )
-        elif hook_type == "reconstruct":
-            core_operation = (  # noqa: E731
-                lambda m, i, o: reconstruct_sae_hook(  # noqa: E731
-                    self.sae_model, m, i, o
+        match hook_type:
+            case "add":
+                core_operation = (  # noqa: E731
+                    lambda m, i, o: add_feature_hook(
+                        self.sae_model, feature_idx, value, m, i, o
+                    )
                 )
-            )
-        else:
-            raise ValueError(f"Unknown hook_type: {hook_type}")
+            case "scale":
+                core_operation = (  # noqa: E731
+                    lambda m, i, o: scale_feature_hook(
+                        self.sae_model, feature_idx, value, m, i, o
+                    )
+                )
+            case "reconstruct":
+                core_operation = (  # noqa: E731
+                    lambda m, i, o: reconstruct_sae_hook(
+                        self.sae_model, m, i, o
+                    )
+                )
 
-        if timesteps and hook_type != "reconstruct":
+        if timesteps:
             hook_fn = TimedHook(
                 core_operation,
                 self.pipe.scheduler.num_inference_steps,
@@ -272,7 +311,7 @@ class SAEInterventionManager:
         )
         return handle
 
-    def generate_image(
+    def _generate_image(
         self,
         prompt: str,
         generator: torch.Generator,
@@ -284,8 +323,8 @@ class SAEInterventionManager:
             prompt (str): Text prompt for generation
             generator (torch.Generator): Random generator
                 for reproducibility.
-            hook_handle (optional, Optional[Any]): Optional hook handle for
-                intervention. Defaults to None.
+            hook_handle (optional, Optional[Any]): Optional registered sae
+                hook handle for intervention. Defaults to None.
 
         Returns:
             Tuple[Image.Image, List[Image.Image], List[int]]:
@@ -319,14 +358,6 @@ class SAEInterventionManager:
             if self.config.num_inference_steps - 1 not in capture_steps:
                 capture_steps.append(self.config.num_inference_steps - 1)
 
-            # Convert the steps to diffusion literature convention
-            capture_steps = [
-                self.config.num_inference_steps - 1 - step
-                for step in capture_steps
-            ]
-
-            capture_steps = capture_steps[::-1]
-
             _, intermediates, _ = self.pipe.run_with_cache_intermediate(
                 prompt=prompt,
                 num_inference_steps=self.config.num_inference_steps,
@@ -343,7 +374,7 @@ class SAEInterventionManager:
 
         return final_image, intermediate_images, capture_steps
 
-    def capture_feature_map(
+    def _capture_feature_map(
         self,
         target_module: str,
         feature_idx: int,
@@ -363,8 +394,7 @@ class SAEInterventionManager:
             Tuple[Image.Image, List[torch.Tensor]]: Generated image and list
                 of feature map tensors
         """
-        module = self.locate_module(target_module)
-
+        module = self._locate_module(target_module)
         feature_maps = {}
         current_step = [0]
 
@@ -377,11 +407,13 @@ class SAEInterventionManager:
                     .to(self.sae_model.device)
                 )
                 diff, _ = self.sae_model.preprocess_input(diff)
-                activated = self.sae_model.encode(diff)
-                activated = torch.nn.functional.relu(activated)
+                activations = F.relu(self.sae_model.encode(diff))
+                top_acts, _ = self.sae_model._get_topk(
+                    activations, k=self.sae_model.cfg.k
+                )
 
                 # Extract activations for the target feature
-                feature_activations = activated[..., feature_idx]
+                feature_activations = top_acts[..., feature_idx]
 
                 feature_maps[current_step[0]] = (
                     feature_activations.detach().cpu()
@@ -442,7 +474,7 @@ class SAEInterventionManager:
             generator = torch.Generator(self.device).manual_seed(
                 self.config.seed
             )
-            original_image, _, _ = self.generate_image(prompt, generator)
+            original_image, _, _ = self._generate_image(prompt, generator)
 
             original_path = os.path.join(prompt_dir, "original.png")
             original_image.save(original_path)
@@ -468,18 +500,20 @@ class SAEInterventionManager:
                         f"value {value}"
                     )
 
-                    hook_handle = self.register_sae_hook(
+                    hook_handle = self._register_sae_hook(
                         target_module=self.config.target_module,
                         feature_idx=feature_idx,
                         value=value,
                         hook_type=self.config.hook_type,
+                        timesteps=self.timesteps,
+                        timestep_values=self.timestep_values,
                     )
 
                     # identical seed for reproducibility
                     generator = torch.Generator(self.device).manual_seed(
                         self.config.seed
                     )
-                    intervened_image, _, _ = self.generate_image(
+                    intervened_image, _, _ = self._generate_image(
                         prompt, generator, hook_handle
                     )
 
@@ -488,7 +522,7 @@ class SAEInterventionManager:
                     compare_path = os.path.join(
                         feature_dir, f"compare_value_{value}.png"
                     )
-                    self.visualize_results(
+                    self._visualize_results(
                         original_images=[original_image],
                         intervened_images=[intervened_image],
                         save_path=compare_path,
@@ -504,13 +538,9 @@ class SAEInterventionManager:
                 grid_images.append(feature_row)
 
             grid_path = os.path.join(prompt_dir, "grid_visualization.png")
+            column_labels = ["Original"] + self.config.intervention_values
 
-            if self.config.hook_type == "reconstruct":
-                column_labels = ["Original", "Reconstructed"]
-            else:
-                column_labels = ["Original"] + self.config.intervention_values
-
-            self.visualize_grid_results(
+            self._visualize_grid_results(
                 grid_images=grid_images,
                 save_path=grid_path,
                 intervention_values=column_labels,
@@ -564,7 +594,7 @@ class SAEInterventionManager:
                     self.config.seed
                 )
                 original_final, original_intermediates, capture_steps = (
-                    self.generate_image(prompt, generator)
+                    self._generate_image(prompt, generator)
                 )
                 original_path = os.path.join(prompt_dir, "original.png")
                 original_final.save(original_path)
@@ -585,7 +615,7 @@ class SAEInterventionManager:
                     f"Generating images with intervention for feature "
                     f"{feature}..."
                 )
-                hook_handle = self.register_sae_hook(
+                hook_handle = self._register_sae_hook(
                     target_module=self.config.target_module,
                     feature_idx=feature,
                     value=self.config.intervention_values[0],
@@ -598,7 +628,7 @@ class SAEInterventionManager:
                     self.config.seed
                 )
                 intervened_final, intervened_intermediates, _ = (
-                    self.generate_image(prompt, generator, hook_handle)
+                    self._generate_image(prompt, generator, hook_handle)
                 )
                 hook_handle.remove()
 
@@ -609,7 +639,7 @@ class SAEInterventionManager:
                 # -------------------------------------------------------------
                 # Comparison
                 # -------------------------------------------------------------
-                self.visualize_results(
+                self._visualize_results(
                     original_images=[original_final],
                     intervened_images=[intervened_final],
                     save_path=os.path.join(prompt_dir, "comparison.png"),
@@ -621,7 +651,7 @@ class SAEInterventionManager:
                     f"{os.path.join(prompt_dir, 'comparison.png')}"
                 )
 
-                self.visualize_intermediate_results(
+                self._visualize_intermediate_results(
                     original_images=original_intermediates,
                     intervened_images=intervened_intermediates,
                     save_path=os.path.join(
@@ -629,9 +659,6 @@ class SAEInterventionManager:
                     ),
                     prompts=[prompt],
                     timesteps=capture_steps,
-                )
-                logger.info(
-                    f"Saved intermediate comparison to {os.path.join(prompt_dir, 'intermediate_comparison.png')}"  # noqa: E501
                 )
 
     def _generate_feature_maps(
@@ -653,14 +680,14 @@ class SAEInterventionManager:
             f"Generating feature maps for feature {self.config.features[0]}..."
         )
 
-        _, feature_maps = self.capture_feature_map(
+        _, feature_maps = self._capture_feature_map(
             target_module=self.config.target_module,
             feature_idx=self.config.features[0],
             prompt=prompt,
             capture_timesteps=capture_steps,
         )
 
-        self.visualize_feature_maps(
+        self._visualize_feature_maps(
             feature_maps=feature_maps,
             images=original_images,
             save_path=os.path.join(output_dir, "feature_maps_over_time.png"),
@@ -668,7 +695,7 @@ class SAEInterventionManager:
             timesteps=capture_steps,
         )
 
-    def visualize_results(
+    def _visualize_results(
         self,
         original_images: List[Image.Image],
         intervened_images: List[Image.Image],
@@ -691,11 +718,6 @@ class SAEInterventionManager:
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         axes = axes.reshape(1, -1)
-
-        title = "Intervention Comparison"
-        if timesteps:
-            title += f" (Timesteps: {', '.join(map(str, timesteps))})"
-        fig.suptitle(title, fontsize=16)
 
         ## Original image:
         orig_img = original_images[0]
@@ -726,21 +748,11 @@ class SAEInterventionManager:
         axes[0, 2].set_title("Difference")
         axes[0, 2].axis("off")
 
-        axes[0, 0].text(
-            0.5,
-            -0.15,
-            prompts[0][:80],
-            transform=axes[0, 0].transAxes,
-            fontsize=10,
-            ha="center",
-            va="top",
-        )
-
         plt.subplots_adjust(top=0.95)
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-    def visualize_intermediate_results(
+    def _visualize_intermediate_results(
         self,
         original_images: List[Image.Image],
         intervened_images: List[Image.Image],
@@ -763,35 +775,63 @@ class SAEInterventionManager:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
         fig, axes = plt.subplots(3, n_steps, figsize=(n_steps * 4, 12))
-        fig.suptitle(f"Prompt: {prompts[0][:80]}", fontsize=16)
+        axes[0, 0].set_ylabel(
+            "Original",
+            fontsize=14,
+            fontweight="bold",
+            rotation=0,
+            labelpad=60,
+            verticalalignment="center",
+        )
+        if hasattr(self, "config") and self.config.hook_type == "reconstruct":
+            axes[1, 0].set_ylabel(
+                "Reconstruction",
+                ffontsize=14,
+                fontweight="bold",
+                rotation=0,
+                labelpad=60,
+                verticalalignment="center",
+            )
+        else:
+            axes[1, 0].set_ylabel(
+                "Intervened",
+                fontsize=14,
+                fontweight="bold",
+                rotation=0,
+                labelpad=60,
+                verticalalignment="center",
+            )
+        axes[2, 0].set_ylabel(
+            "Difference",
+            fontsize=14,
+            fontweight="bold",
+            rotation=0,
+            labelpad=60,
+            verticalalignment="center",
+        )
 
         for i in range(n_steps):
-            timestep_label = (
-                f"Timestep {timesteps[i]}" if timesteps else f"Timestep {i}"
-            )
 
-            ## Original image:
+            diffusion_time = self._convert_timestep_to_diffusion_time(
+                self.scheduler_timesteps[timesteps[i]]
+            )
+            timestep_label = f"t={diffusion_time:.3f}"
+            # Original image:
             orig_img = original_images[i]
             if isinstance(orig_img, list) and len(orig_img) > 0:
                 orig_img = orig_img[0]
             orig_array = np.array(orig_img)
 
             axes[0, i].imshow(orig_array)
-            axes[0, i].set_title(f"Original - {timestep_label}")
-            axes[0, i].axis("off")
+            axes[0, i].set_title(timestep_label)
 
-            ## Intervened image:
+            # Intervened image:
             interv_img = intervened_images[i]
             if isinstance(interv_img, list) and len(interv_img) > 0:
                 interv_img = interv_img[0]
             interv_array = np.array(interv_img)
 
             axes[1, i].imshow(interv_array)
-            if self.config.hook_type == "reconstruct":
-                axes[1, i].set_title(f"Reconstruction - {timestep_label}")
-            else:
-                axes[1, i].set_title(f"Intervened - {timestep_label}")
-            axes[1, i].axis("off")
 
             # Calculate and plot difference
             orig_array = orig_array.astype(np.float32)
@@ -803,15 +843,33 @@ class SAEInterventionManager:
                 diff = diff / diff_max
 
             axes[2, i].imshow(diff, cmap="viridis")
-            axes[2, i].set_title(f"Difference - {timestep_label}")
-            axes[2, i].axis("off")
+
+            # ylabel; ensure no conflict with turning off axes
+            for ax in axes[:, i]:
+                if i == 0:
+                    ax.spines[["top", "right", "bottom"]].set_visible(False)
+                    ax.spines["left"].set_visible(False)
+
+                    ax.tick_params(
+                        left=False,
+                        bottom=False,
+                        labelleft=False,
+                        labelbottom=False,
+                    )
+                else:
+                    ax.axis("off")
 
         plt.tight_layout()
-        plt.subplots_adjust(top=0.9)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.subplots_adjust(wspace=0.05, hspace=0)
+        plt.savefig(
+            save_path,
+            dpi=300,
+            bbox_inches="tight",
+            pad_inches=0.02,
+        )
         plt.close(fig)
 
-    def visualize_feature_maps(
+    def _visualize_feature_maps(
         self,
         feature_maps: List[torch.Tensor],
         images: List[Image.Image],
@@ -835,12 +893,12 @@ class SAEInterventionManager:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
         fig, axes = plt.subplots(1, n_steps, figsize=(n_steps * 4, 5))
-        fig.suptitle(f"Feature {feature_idx} Activation Maps", fontsize=16)
 
         for i in range(n_steps):
-            timestep_label = (
-                f"Timestep {timesteps[i]}" if timesteps else f"Timestep {i}"
+            diffusion_time = self._convert_timestep_to_diffusion_time(
+                self.scheduler_timesteps[timesteps[i]]
             )
+            timestep_label = f"t={diffusion_time:.3f}"
 
             img = images[i]
             if isinstance(img, list) and len(img) > 0:
@@ -853,7 +911,7 @@ class SAEInterventionManager:
             )
 
             axes[i].imshow(img_heatmap_overlay)
-            axes[i].set_title(f"Image - {timestep_label}")
+            axes[i].set_title(f"{timestep_label}")
             axes[i].axis("off")
 
         plt.subplots_adjust(top=0.9)
@@ -908,7 +966,7 @@ class SAEInterventionManager:
         heatmap_with_transparency = Image.alpha_composite(image, heatmap_image)
         return heatmap_with_transparency
 
-    def visualize_grid_results(
+    def _visualize_grid_results(
         self,
         grid_images: List[List[Image.Image]],
         save_path: str,
@@ -937,9 +995,7 @@ class SAEInterventionManager:
 
         # Column titles
         for j, val in enumerate(intervention_values):
-            title_text = (
-                str(val) if isinstance(val, str) else f"Value: {val:.2f}"
-            )
+            title_text = str(val) if isinstance(val, str) else f"β={val:.2f}"
             axes[0, j].set_title(
                 title_text, pad=10, fontsize=14, fontweight="bold"
             )
@@ -949,13 +1005,6 @@ class SAEInterventionManager:
             axes[i, 0].set_ylabel(
                 f"Feature {feat}", fontsize=14, fontweight="bold", labelpad=20
             )
-
-        prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt
-        fig.suptitle(
-            f"Intervention Grid - Prompt: {prompt_display}",
-            fontsize=18,
-            fontweight="bold",
-        )
 
         for i in range(n_rows):
             for j in range(n_cols):
@@ -1027,12 +1076,6 @@ class SAEInterventionManager:
                 f"Feature {feat}", labelpad=20, fontsize=14, fontweight="bold"
             )
 
-        prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt
-        fig_diff.suptitle(
-            f"Differences Grid - Prompt: {prompt_display}",
-            fontsize=18,
-            fontweight="bold",
-        )
         for i in range(n_rows):
             if i < len(grid_images) and len(grid_images[i]) > 0:
                 # First column shows original image
@@ -1065,6 +1108,16 @@ class SAEInterventionManager:
         )
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.close(fig_diff)
+
+    def run_topk_trace_mode(self, prompts: List[str]) -> None:
+        """
+        Run top-k feature tracing mode to analyze which features are most
+        active at each timestep.
+
+        Args:
+            prompts (List[str]): List of prompts to analyze
+        """
+        pass
 
 
 if __name__ == "__main__":
