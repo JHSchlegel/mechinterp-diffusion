@@ -216,7 +216,7 @@ def scale_feature_hook(
     activations: Tensor = F.relu(sae.encode(sae_input))
     original_activations: Tensor = activations[..., feature_idx].clone()
     mask: Tensor = torch.zeros_like(activations, device=diff.device)
-    mask[..., feature_idx] = beta * original_activations.squeeze(-1)
+    mask[..., feature_idx] = (beta - 1.0) * original_activations.squeeze(-1)
     to_add: Tensor = sae.postprocess_output(mask @ sae.W_dec.weight.T, info)
     return (output[0] + to_add.permute(0, 3, 1, 2).to(output[0].device),)
 
@@ -244,30 +244,3 @@ def reconstruct_sae_hook(
     reconstructed: Tensor = sae.decode(top_acts)
     sae_output: Tensor = sae.postprocess_output(reconstructed, info)
     return (input[0] + sae_output.permute(0, 3, 1, 2).to(output[0].device),)
-
-
-@torch.no_grad()
-def get_activation_map(
-    sae: BaseSAE,
-    feature_idx: int,
-    module,
-    input: Tuple[Tensor],
-    output: Tuple[Tensor],
-) -> Tensor:
-    """
-    Get the activation map for a specific feature index.
-
-    Args:
-        sae (BaseSAE): The Sparse Autoencoder model
-        feature_idx (int): Feature index to activate
-        module: Module being hooked
-        input (Tuple[Tensor]): Input tensor tuple
-        output (Tuple[Tensor]): Output tensor tuple
-
-    Returns:
-        Tensor: Activation map for the specified feature index
-    """
-    diff = (output[0] - input[0]).permute((0, 2, 3, 1)).to(sae.device)
-    sae_input, info = sae.preprocess_input(diff)
-    activations: Tensor = F.relu(sae.encode(sae_input))
-    return activations[..., feature_idx].squeeze(-1)
