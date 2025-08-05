@@ -13,6 +13,10 @@ Changes made to original code:
  - automatic formatting and ruff conformance
  - added option to early stop denoising loop in case only interested in
     few late timesteps
+ - use contextlib.nullcontext for torch.no_grad() to
+ allow for gradients in the denoising loop in circuit discovery and disable
+ them during normal generation
+
 
 License of original code:
                                 Apache License
@@ -221,6 +225,9 @@ limitations under the License.
 # =========================================================================== #
 #                           Packages and Presets                              #
 # =========================================================================== #
+
+
+import contextlib
 from typing import Callable, Dict, List, Optional, Union
 
 import torch
@@ -292,7 +299,6 @@ class HookedDiffusionAbstractPipeline:
     def from_pretrained(cls, *args, **kwargs):
         return cls(cls.parent_cls.from_pretrained(*args, **kwargs))
 
-    @torch.no_grad()
     def run_with_hooks(
         self,
         *args,
@@ -307,6 +313,7 @@ class HookedDiffusionAbstractPipeline:
         ] = None,
         latents: Optional[torch.Tensor] = None,
         output_type: Optional[str] = "pil",
+        with_grad: bool = False,
         **kwargs,
     ):
         """
@@ -359,6 +366,7 @@ class HookedDiffusionAbstractPipeline:
                 extra_step_kwargs,
                 added_cond_kwargs,
                 prompt_embeds,
+                with_grad=with_grad,
                 **kwargs,
             )
             image = self._postprocess_latents(latents, output_type, generator)
@@ -371,7 +379,6 @@ class HookedDiffusionAbstractPipeline:
 
         return image
 
-    @torch.no_grad()
     def run_with_cache(
         self,
         *args,
@@ -389,6 +396,7 @@ class HookedDiffusionAbstractPipeline:
         save_input: bool = False,
         save_output: bool = True,
         unconditional: bool = False,
+        with_grad: bool = False,
         **kwargs,
     ):
         """
@@ -449,38 +457,45 @@ class HookedDiffusionAbstractPipeline:
             **kwargs,
         )
 
-        latents = self._denoise_loop(
-            timesteps,
-            latents,
-            guidance_scale,
-            extra_step_kwargs,
-            added_cond_kwargs,
-            prompt_embeds,
-            **kwargs,
+        # Define a context manager that is either torch.no_grad() or a
+        # dummy null context
+        context = (
+            torch.no_grad() if not with_grad else contextlib.nullcontext()
         )
 
-        for hook in hooks:
-            hook.remove()
-        if self.use_hooked_scheduler:
-            self.pipe.scheduler.pre_hooks = []
-            self.pipe.scheduler.post_hooks = []
+        with context:
+            latents = self._denoise_loop(
+                timesteps,
+                latents,
+                guidance_scale,
+                extra_step_kwargs,
+                added_cond_kwargs,
+                prompt_embeds,
+                with_grad=with_grad,
+                **kwargs,
+            )
 
-        cache_dict = {}
-        if save_input:
-            for position, block in cache_input.items():
-                cache_input[position] = torch.stack(block, dim=1)
-            cache_dict["input"] = cache_input
+            for hook in hooks:
+                hook.remove()
+            if self.use_hooked_scheduler:
+                self.pipe.scheduler.pre_hooks = []
+                self.pipe.scheduler.post_hooks = []
 
-        if save_output:
-            for position, block in cache_output.items():
-                cache_output[position] = torch.stack(block, dim=1)
-            cache_dict["output"] = cache_output
+            cache_dict = {}
+            if save_input:
+                for position, block in cache_input.items():
+                    cache_input[position] = torch.stack(block, dim=1)
+                cache_dict["input"] = cache_input
 
-        image = self._postprocess_latents(latents, output_type, generator)
+            if save_output:
+                for position, block in cache_output.items():
+                    cache_output[position] = torch.stack(block, dim=1)
+                cache_dict["output"] = cache_output
 
-        return image, cache_dict
+            image = self._postprocess_latents(latents, output_type, generator)
 
-    @torch.no_grad()
+            return image, cache_dict
+
     def run_with_cache_intermediate(
         self,
         *args,
@@ -498,6 +513,7 @@ class HookedDiffusionAbstractPipeline:
         output_type: Optional[str] = "pil",
         save_input: bool = False,
         save_output: bool = True,
+        with_grad: bool = False,
         **kwargs,
     ):
         """
@@ -570,155 +586,172 @@ class HookedDiffusionAbstractPipeline:
         ]
         hooks = [hook for hook in hooks if hook is not None]
 
-        # Denoising loop
-        self._num_timesteps = len(timesteps)
+        # Define a context manager that is either torch.no_grad() or a
+        # dummy null context
+        context = (
+            torch.no_grad() if not with_grad else contextlib.nullcontext()
+        )
 
-        # Get SDXL specifici denoising_end parameter:
-        denoising_end = kwargs.get("denoising_end", None)
-        # Apply denoising_end:
-        if (
-            denoising_end is not None
-            and isinstance(denoising_end, float)
-            and denoising_end > 0
-            and denoising_end < 1
-        ):
-            discrete_timestep_cutoff = int(
-                round(
-                    self.scheduler.config.num_train_timesteps
-                    - (
-                        denoising_end
-                        * self.scheduler.config.num_train_timesteps
-                    )
-                )
-            )
-            num_inference_steps = len(
-                list(
-                    filter(
-                        lambda ts: ts >= discrete_timestep_cutoff, timesteps
-                    )
-                )
-            )
-            timesteps = timesteps[:num_inference_steps]
+        with context:
+            # Denoising loop
             self._num_timesteps = len(timesteps)
 
-        timestep_cond = None
-        if self.is_sdxl and self.unet.config.time_cond_proj_dim is not None:
-            guidance_scale_tensor = torch.tensor(
-                self.pipe.guidance_scale - 1
-            ).repeat(latents.shape[0])
-            timestep_cond = self.get_guidance_scale_embedding(
-                guidance_scale_tensor,
-                embedding_dim=self.unet.config.time_cond_proj_dim,
-            ).to(device=latents.device, dtype=latents.dtype)
-
-        guidance_rescale = kwargs.get("guidance_rescale", 0.0)
-
-        # Early stopping:
-        max_denoising_steps = kwargs.get("max_denoising_steps", None)
-
-        for step_idx, t in enumerate(timesteps):
-            # Early stopping condition:
+            # Get SDXL specifici denoising_end parameter:
+            denoising_end = kwargs.get("denoising_end", None)
+            # Apply denoising_end:
             if (
-                max_denoising_steps is not None
-                and step_idx >= max_denoising_steps
+                denoising_end is not None
+                and isinstance(denoising_end, float)
+                and denoising_end > 0
+                and denoising_end < 1
             ):
-                break
+                discrete_timestep_cutoff = int(
+                    round(
+                        self.scheduler.config.num_train_timesteps
+                        - (
+                            denoising_end
+                            * self.scheduler.config.num_train_timesteps
+                        )
+                    )
+                )
+                num_inference_steps = len(
+                    list(
+                        filter(
+                            lambda ts: ts >= discrete_timestep_cutoff,
+                            timesteps,
+                        )
+                    )
+                )
+                timesteps = timesteps[:num_inference_steps]
+                self._num_timesteps = len(timesteps)
 
-            # expand the latents if we are doing classifier free guidance
-            latent_model_input = (
-                torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
-            )
-            latent_model_input = self.pipe.scheduler.scale_model_input(
-                latent_model_input, t
-            )
+            timestep_cond = None
+            if (
+                self.is_sdxl
+                and self.unet.config.time_cond_proj_dim is not None
+            ):
+                guidance_scale_tensor = torch.tensor(
+                    self.pipe.guidance_scale - 1
+                ).repeat(latents.shape[0])
+                timestep_cond = self.get_guidance_scale_embedding(
+                    guidance_scale_tensor,
+                    embedding_dim=self.unet.config.time_cond_proj_dim,
+                ).to(device=latents.device, dtype=latents.dtype)
 
-            # predict the noise residual
-            noise_pred = self.unet(
-                latent_model_input,
-                t,
-                encoder_hidden_states=prompt_embeds,
-                timestep_cond=timestep_cond,
-                cross_attention_kwargs=kwargs.get(
-                    "cross_attention_kwargs", None
-                ),
-                added_cond_kwargs=added_cond_kwargs,
-                return_dict=False,
-            )[0]
+            guidance_rescale = kwargs.get("guidance_rescale", 0.0)
 
-            # perform guidance
-            if guidance_scale > 1.0:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (
-                    noise_pred_text - noise_pred_uncond
+            # Early stopping:
+            max_denoising_steps = kwargs.get("max_denoising_steps", None)
+
+            for step_idx, t in enumerate(timesteps):
+                # Early stopping condition:
+                if (
+                    max_denoising_steps is not None
+                    and step_idx >= max_denoising_steps
+                ):
+                    break
+
+                # expand the latents if we are doing classifier free guidance
+                latent_model_input = (
+                    torch.cat([latents] * 2)
+                    if guidance_scale > 1.0
+                    else latents
+                )
+                latent_model_input = self.pipe.scheduler.scale_model_input(
+                    latent_model_input, t
                 )
 
-                # Apply guidance rescale for SDXL:
-                if self.is_sdxl and guidance_rescale > 0.0:
+                # predict the noise residual
+                noise_pred = self.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep_cond=timestep_cond,
+                    cross_attention_kwargs=kwargs.get(
+                        "cross_attention_kwargs", None
+                    ),
+                    added_cond_kwargs=added_cond_kwargs,
+                    return_dict=False,
+                )[0]
 
-                    noise_pred = rescale_noise_cfg(
-                        noise_pred, noise_pred_text, guidance_rescale
+                # perform guidance
+                if guidance_scale > 1.0:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (
+                        noise_pred_text - noise_pred_uncond
                     )
 
-            # compute the previous noisy sample x_t -> x_t-1
-            scheduler_out = self.pipe.scheduler.step(
-                noise_pred, t, latents, **extra_step_kwargs, return_dict=True
+                    # Apply guidance rescale for SDXL:
+                    if self.is_sdxl and guidance_rescale > 0.0:
+
+                        noise_pred = rescale_noise_cfg(
+                            noise_pred, noise_pred_text, guidance_rescale
+                        )
+
+                # compute the previous noisy sample x_t -> x_t-1
+                scheduler_out = self.pipe.scheduler.step(
+                    noise_pred,
+                    t,
+                    latents,
+                    **extra_step_kwargs,
+                    return_dict=True,
+                )
+                latents = scheduler_out.prev_sample
+                pred_original_sample = scheduler_out.pred_original_sample
+                all_intermediate_latents.append(pred_original_sample)
+
+            for hook in hooks:
+                hook.remove()
+            if self.use_hooked_scheduler:
+                self.pipe.scheduler.pre_hooks = []
+                self.pipe.scheduler.post_hooks = []
+
+            cache_dict = {}
+            if save_input:
+                for position, block in cache_input.items():
+                    cache_input[position] = torch.stack(block, dim=1)
+                cache_dict["input"] = cache_input
+
+            if save_output:
+                for position, block in cache_output.items():
+                    cache_output[position] = torch.stack(block, dim=1)
+                cache_dict["output"] = cache_output
+
+            if not output_type == "latent":
+                image = self.pipe.vae.decode(
+                    latents / self.pipe.vae.config.scaling_factor,
+                    return_dict=False,
+                    generator=generator,
+                )[0]
+                if len(all_intermediate_latents) > 0:
+                    for i in range(len(all_intermediate_latents)):
+                        all_intermediate_latents[i] = self.pipe.vae.decode(
+                            all_intermediate_latents[i]
+                            / self.pipe.vae.config.scaling_factor,
+                            return_dict=False,
+                            generator=generator,
+                        )[0]
+            else:
+                image = latents
+            do_denormalize = [True] * image.shape[0]
+
+            image = self.pipe.image_processor.postprocess(
+                image, output_type=output_type, do_denormalize=do_denormalize
             )
-            latents = scheduler_out.prev_sample
-            pred_original_sample = scheduler_out.pred_original_sample
-            all_intermediate_latents.append(pred_original_sample)
-
-        for hook in hooks:
-            hook.remove()
-        if self.use_hooked_scheduler:
-            self.pipe.scheduler.pre_hooks = []
-            self.pipe.scheduler.post_hooks = []
-
-        cache_dict = {}
-        if save_input:
-            for position, block in cache_input.items():
-                cache_input[position] = torch.stack(block, dim=1)
-            cache_dict["input"] = cache_input
-
-        if save_output:
-            for position, block in cache_output.items():
-                cache_output[position] = torch.stack(block, dim=1)
-            cache_dict["output"] = cache_output
-
-        if not output_type == "latent":
-            image = self.pipe.vae.decode(
-                latents / self.pipe.vae.config.scaling_factor,
-                return_dict=False,
-                generator=generator,
-            )[0]
             if len(all_intermediate_latents) > 0:
                 for i in range(len(all_intermediate_latents)):
-                    all_intermediate_latents[i] = self.pipe.vae.decode(
-                        all_intermediate_latents[i]
-                        / self.pipe.vae.config.scaling_factor,
-                        return_dict=False,
-                        generator=generator,
-                    )[0]
-        else:
-            image = latents
-        do_denormalize = [True] * image.shape[0]
-
-        image = self.pipe.image_processor.postprocess(
-            image, output_type=output_type, do_denormalize=do_denormalize
-        )
-        if len(all_intermediate_latents) > 0:
-            for i in range(len(all_intermediate_latents)):
-                all_intermediate_latents[i] = (
-                    self.pipe.image_processor.postprocess(
-                        all_intermediate_latents[i],
-                        output_type=output_type,
-                        do_denormalize=do_denormalize,
+                    all_intermediate_latents[i] = (
+                        self.pipe.image_processor.postprocess(
+                            all_intermediate_latents[i],
+                            output_type=output_type,
+                            do_denormalize=do_denormalize,
+                        )
                     )
-                )
 
-        if output_type == "latent":
-            image = image.cpu().numpy()
+            if output_type == "latent":
+                image = image.cpu().numpy()
 
-        return image, all_intermediate_latents, cache_dict
+            return image, all_intermediate_latents, cache_dict
 
     def run_with_hooks_and_cache(
         self,
@@ -1138,103 +1171,121 @@ class HookedDiffusionAbstractPipeline:
         extra_step_kwargs,
         added_cond_kwargs,
         prompt_embeds,
+        with_grad: bool = False,
         **kwargs,
     ):
-        self._num_timesteps = len(timesteps)
+        # Define a context manager that is either torch.no_grad() or a
+        # dummy null context
+        context = (
+            torch.no_grad() if not with_grad else contextlib.nullcontext()
+        )
 
-        # Get SDXL specifici denoising_end parameter:
-        denoising_end = kwargs.get("denoising_end", None)
-        # Apply denoising_end:
-        if (
-            denoising_end is not None
-            and isinstance(denoising_end, float)
-            and denoising_end > 0
-            and denoising_end < 1
-        ):
-            discrete_timestep_cutoff = int(
-                round(
-                    self.scheduler.config.num_train_timesteps
-                    - (
-                        denoising_end
-                        * self.scheduler.config.num_train_timesteps
-                    )
-                )
-            )
-            num_inference_steps = len(
-                list(
-                    filter(
-                        lambda ts: ts >= discrete_timestep_cutoff, timesteps
-                    )
-                )
-            )
-            timesteps = timesteps[:num_inference_steps]
+        with context:
             self._num_timesteps = len(timesteps)
 
-        # Early stopping:
-        max_denoising_steps = kwargs.get("max_denoising_steps", None)
-
-        # Get SDXL specific guidance rescale parameter:
-        guidance_rescale = kwargs.get("guidance_rescale", 0.0)
-        # 9. Optionally get Guidance Scale Embedding
-        timestep_cond = None
-        if self.is_sdxl and self.unet.config.time_cond_proj_dim is not None:
-            guidance_scale_tensor = torch.tensor(
-                self.pipe.guidance_scale - 1
-            ).repeat(latents.shape[0])
-            timestep_cond = self.get_guidance_scale_embedding(
-                guidance_scale_tensor,
-                embedding_dim=self.unet.config.time_cond_proj_dim,
-            ).to(device=latents.device, dtype=latents.dtype)
-
-        for step_idx, t in enumerate(timesteps):
-            # Early stopping condition:
+            # Get SDXL specifici denoising_end parameter:
+            denoising_end = kwargs.get("denoising_end", None)
+            # Apply denoising_end:
             if (
-                max_denoising_steps is not None
-                and step_idx >= max_denoising_steps
+                denoising_end is not None
+                and isinstance(denoising_end, float)
+                and denoising_end > 0
+                and denoising_end < 1
             ):
-                break
+                discrete_timestep_cutoff = int(
+                    round(
+                        self.scheduler.config.num_train_timesteps
+                        - (
+                            denoising_end
+                            * self.scheduler.config.num_train_timesteps
+                        )
+                    )
+                )
+                num_inference_steps = len(
+                    list(
+                        filter(
+                            lambda ts: ts >= discrete_timestep_cutoff,
+                            timesteps,
+                        )
+                    )
+                )
+                timesteps = timesteps[:num_inference_steps]
+                self._num_timesteps = len(timesteps)
 
-            # expand the latents if we are doing classifier free guidance
-            latent_model_input = (
-                torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
-            )
-            latent_model_input = self.pipe.scheduler.scale_model_input(
-                latent_model_input, t
-            )
+            # Early stopping:
+            max_denoising_steps = kwargs.get("max_denoising_steps", None)
 
-            # predict the noise residual
-            noise_pred = self.unet(
-                latent_model_input,
-                t,
-                encoder_hidden_states=prompt_embeds,
-                timestep_cond=timestep_cond,
-                cross_attention_kwargs=kwargs.get(
-                    "cross_attention_kwargs", None
-                ),
-                added_cond_kwargs=added_cond_kwargs,
-                return_dict=False,
-            )[0]
+            # Get SDXL specific guidance rescale parameter:
+            guidance_rescale = kwargs.get("guidance_rescale", 0.0)
+            # 9. Optionally get Guidance Scale Embedding
+            timestep_cond = None
+            if (
+                self.is_sdxl
+                and self.unet.config.time_cond_proj_dim is not None
+            ):
+                guidance_scale_tensor = torch.tensor(
+                    self.pipe.guidance_scale - 1
+                ).repeat(latents.shape[0])
+                timestep_cond = self.get_guidance_scale_embedding(
+                    guidance_scale_tensor,
+                    embedding_dim=self.unet.config.time_cond_proj_dim,
+                ).to(device=latents.device, dtype=latents.dtype)
 
-            # perform guidance
-            if guidance_scale > 1.0:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + guidance_scale * (
-                    noise_pred_text - noise_pred_uncond
+            for step_idx, t in enumerate(timesteps):
+                # Early stopping condition:
+                if (
+                    max_denoising_steps is not None
+                    and step_idx >= max_denoising_steps
+                ):
+                    break
+
+                # expand the latents if we are doing classifier free guidance
+                latent_model_input = (
+                    torch.cat([latents] * 2)
+                    if guidance_scale > 1.0
+                    else latents
+                )
+                latent_model_input = self.pipe.scheduler.scale_model_input(
+                    latent_model_input, t
                 )
 
-                # Apply guidance rescale for SDXL:
-                if self.is_sdxl and guidance_rescale > 0.0:
+                # predict the noise residual
+                noise_pred = self.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep_cond=timestep_cond,
+                    cross_attention_kwargs=kwargs.get(
+                        "cross_attention_kwargs", None
+                    ),
+                    added_cond_kwargs=added_cond_kwargs,
+                    return_dict=False,
+                )[0]
 
-                    noise_pred = rescale_noise_cfg(
-                        noise_pred, noise_pred_text, guidance_rescale
+                # perform guidance
+                if guidance_scale > 1.0:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (
+                        noise_pred_text - noise_pred_uncond
                     )
 
-            # compute the previous noisy sample x_t -> x_t-1
-            latents = self.pipe.scheduler.step(
-                noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-            )[0]
+                    # Apply guidance rescale for SDXL:
+                    if self.is_sdxl and guidance_rescale > 0.0:
 
-        return latents
+                        noise_pred = rescale_noise_cfg(
+                            noise_pred, noise_pred_text, guidance_rescale
+                        )
+
+                # compute the previous noisy sample x_t -> x_t-1
+                latents = self.pipe.scheduler.step(
+                    noise_pred,
+                    t,
+                    latents,
+                    **extra_step_kwargs,
+                    return_dict=False,
+                )[0]
+
+            return latents
 
     def _postprocess_latents(self, latents, output_type, generator):
         if not output_type == "latent":
