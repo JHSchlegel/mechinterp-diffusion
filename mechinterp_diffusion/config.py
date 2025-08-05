@@ -278,7 +278,7 @@ class TrainerConfig(Serializable):
     timesteps in the dataset.
     """
 
-    lr_scheduler_type: str = "cosine"
+    lr_scheduler_type: str = "constant"
     """
     Type of learning rate scheduler to use. See Hugging Face documentation for
     more details:
@@ -362,7 +362,7 @@ class TrainingConfig(Serializable):
                 if self.trainer.target_timesteps
                 else "all"
             )
-            if self.sae.use_batch_topk:
+            if hasattr(self.sae, "use_batch_topk") and self.sae.use_batch_topk:
                 sae_name = "BatchTopKSAE"
             else:
                 sae_name = sae_type
@@ -487,7 +487,7 @@ class SAEInterventionConfig(Serializable):
             )
 
         if self.intervention_mode == "reconstruct":
-            self.intervention_values = [0.0]
+            self.intervention_values = [1.0]
 
         if self.timestep_values and self.timesteps:
             raise ValueError(
@@ -604,6 +604,29 @@ class ProbeConfig(Serializable):
                 save_dir
                 / f"{self.probe_type}_{dataset_name}_{timestamp}.safetensors"
             )
+
+
+@dataclass
+class HarmonicTemporalSAEConfig(BaseSAEConfig):
+    """Configuration for the Harmonic-Temporal SAE."""
+
+    d_sae: int = 20480  # Override base default
+
+    # Sparsity parameters
+    k: int = 64
+    """Total number of Top-K activations to keep across all frequency bands."""
+    use_batch_topk: bool = False
+    """Whether to use Batch-TopK SAE across all tokens in a band's batch."""
+
+    # Model architecture parameters
+    spatial_dim: Tuple[int, int] = (16, 16)
+    wavelet_type: str = "db4"
+    time_embedding_dim: int = 256
+    time_embedding_hidden_dim: int = 1024
+
+    # Loss and training parameters
+    l1_loss_weight: float = 1e-3
+    num_tokens_dead_threshold: int = 10_000_000
 
 
 # =========================================================================== #
