@@ -428,10 +428,6 @@ class CacheActivationsRunner:
             "timestep": timesteps,
         }
 
-        assert (
-            self.data_has_labels and labels is not None
-        ), "Labels must be provided if the dataset has labels."
-
         if self.data_has_labels:
             n_repeats = len(timesteps) // batch_size
             data_dict["label"] = [
