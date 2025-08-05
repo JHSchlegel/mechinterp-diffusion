@@ -4,7 +4,9 @@ models.
 
 Source:
 https://github.com/surkovv/sdxl-unbox/blob/d5e383fea440aed59d533062f3d8f8435c9a3737/utils/hooks.py
-Adapted for use with the my SAE classes.
+Adapted for use with the my SAE classes and to amplify interventions by
+subtracting intervention from unconditional output and adding it to
+conditional output.
 
 License:
 MIT License
@@ -30,14 +32,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+
+
 import logging
 import os
 import sys
 from typing import Tuple
 
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -184,7 +188,27 @@ def add_feature_hook(
     mask = torch.zeros_like(activations, device=diff.device)
     mask[..., feature_idx] = value
     to_add = sae.postprocess_output(mask @ sae.W_dec.weight.T, info)
-    return (output[0] + to_add.permute(0, 3, 1, 2).to(output[0].device),)
+
+    output_tensor = output[0]
+    to_add_permuted = to_add.permute(0, 3, 1, 2).to(output_tensor.device)
+
+    if output_tensor.shape[0] % 2 == 0:
+        num_prompts = output_tensor.shape[0] // 2
+
+        # Create a multiplier: -1 for unconditional, +1 for conditional
+        # see: https://arxiv.org/pdf/2410.22366
+        multiplier = (
+            torch.cat([-torch.ones(num_prompts), torch.ones(num_prompts)])
+            .to(output_tensor.device)
+            .view(-1, 1, 1, 1)
+        )
+
+        modified_output = output_tensor + to_add_permuted * multiplier
+        return (modified_output,)
+    else:
+        # Fallback for a single pass/ no cfg
+        modified_output = output_tensor + to_add_permuted
+        return (modified_output,)
 
 
 @torch.no_grad()
@@ -218,7 +242,26 @@ def scale_feature_hook(
     mask: Tensor = torch.zeros_like(activations, device=diff.device)
     mask[..., feature_idx] = (beta - 1.0) * original_activations.squeeze(-1)
     to_add: Tensor = sae.postprocess_output(mask @ sae.W_dec.weight.T, info)
-    return (output[0] + to_add.permute(0, 3, 1, 2).to(output[0].device),)
+
+    output_tensor = output[0]
+    to_add_permuted = to_add.permute(0, 3, 1, 2).to(output_tensor.device)
+
+    # Check if classifier-free guidance is enabled.
+    if output_tensor.shape[0] % 2 == 0:
+        num_prompts = output_tensor.shape[0] // 2
+        # Create a multiplier: -1 for unconditional, +1 for conditional
+        # see: https://arxiv.org/pdf/2410.22366
+        multiplier = (
+            torch.cat([-torch.ones(num_prompts), torch.ones(num_prompts)])
+            .to(output_tensor.device)
+            .view(-1, 1, 1, 1)
+        )
+        modified_output = output_tensor + to_add_permuted * multiplier
+        return (modified_output,)
+    else:
+        # Fallback for a single pass/ no cfg
+        modified_output = output_tensor + to_add_permuted
+        return (modified_output,)
 
 
 @torch.no_grad()
