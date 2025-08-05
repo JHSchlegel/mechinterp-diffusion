@@ -3,15 +3,17 @@ Configuration file for extracting latent representations from multi-step
 diffusion models and training sparse autoencoders on these representations.
 """
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+
+
 import datetime
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
 import torch
 from hydra.core.config_store import ConfigStore
 from simple_parsing import Serializable
@@ -604,29 +606,6 @@ class ProbeConfig(Serializable):
                 save_dir
                 / f"{self.probe_type}_{dataset_name}_{timestamp}.safetensors"
             )
-
-
-@dataclass
-class HarmonicTemporalSAEConfig(BaseSAEConfig):
-    """Configuration for the Harmonic-Temporal SAE."""
-
-    d_sae: int = 20480  # Override base default
-
-    # Sparsity parameters
-    k: int = 64
-    """Total number of Top-K activations to keep across all frequency bands."""
-    use_batch_topk: bool = False
-    """Whether to use Batch-TopK SAE across all tokens in a band's batch."""
-
-    # Model architecture parameters
-    spatial_dim: Tuple[int, int] = (16, 16)
-    wavelet_type: str = "db4"
-    time_embedding_dim: int = 256
-    time_embedding_hidden_dim: int = 1024
-
-    # Loss and training parameters
-    l1_loss_weight: float = 1e-3
-    num_tokens_dead_threshold: int = 10_000_000
 
 
 # =========================================================================== #
