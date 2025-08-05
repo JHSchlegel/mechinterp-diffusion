@@ -91,7 +91,7 @@ def evaluate_sae(
         Dict[str, Any]: Dictionary containing evaluation metrics.
     """
     sae.eval()
-    sae.cfg.use_batch_topk = False  # Disable batch top-k for evaluation
+    batch_size = 1 if use_batch_topk else batch_size
 
     # Unique timesteps:
     timesteps = sorted(
