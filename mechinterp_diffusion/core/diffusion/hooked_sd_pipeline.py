@@ -341,6 +341,12 @@ class HookedDiffusionAbstractPipeline:
 
         hooks = [hook for hook in hooks if hook is not None]
 
+        # Define a context manager that is either torch.no_grad() or a dummy
+        # null context
+        context = (
+            torch.no_grad() if not with_grad else contextlib.nullcontext()
+        )
+
         try:
             (
                 prompt_embeds,
@@ -359,17 +365,20 @@ class HookedDiffusionAbstractPipeline:
                 **kwargs,
             )
 
-            latents = self._denoise_loop(
-                timesteps,
-                latents,
-                guidance_scale,
-                extra_step_kwargs,
-                added_cond_kwargs,
-                prompt_embeds,
-                with_grad=with_grad,
-                **kwargs,
-            )
-            image = self._postprocess_latents(latents, output_type, generator)
+            with context:
+                latents = self._denoise_loop(
+                    timesteps,
+                    latents,
+                    guidance_scale,
+                    extra_step_kwargs,
+                    added_cond_kwargs,
+                    prompt_embeds,
+                    with_grad=with_grad,
+                    **kwargs,
+                )
+                image = self._postprocess_latents(
+                    latents, output_type, generator
+                )
         finally:
             for hook in hooks:
                 hook.remove()
@@ -1365,7 +1374,11 @@ class HookedDiffusionAbstractPipeline:
         )
 
         if output_type == "latent":
-            image = image.cpu().numpy()
+            # Only convert to numpy if the tensor doesn't require gradients
+            if image.requires_grad:
+                image = image
+            else:
+                image = image.cpu().numpy()
         return image
 
     def to(self, *args, **kwargs):
