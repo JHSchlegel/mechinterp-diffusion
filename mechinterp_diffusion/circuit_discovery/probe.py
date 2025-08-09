@@ -2,13 +2,15 @@
 Module for definining a CNN that acts as a probe for latent representations.
 """
 
+# =========================================================================== #
+#                           Packages and Presets                              #
+# =========================================================================== #
+
+
 import sys
 from pathlib import Path
 from typing import List, Literal, Tuple
 
-# =========================================================================== #
-#                           Packages and Presets                              #
-# =========================================================================== #
 import torch
 import torch.nn as nn
 from datasets import Dataset
@@ -16,7 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 sys.path.append(str(Path(__file__).parent.parent))
-from utils.reproducibility import set_all_seeds
+from core.utils.reproducibility import set_all_seeds
 
 
 # =========================================================================== #
