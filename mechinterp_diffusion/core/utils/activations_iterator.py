@@ -4,6 +4,9 @@ for training Sparse Autoencoders (SAEs).
 
 Adapted from:
     - https://github.com/surkovv/sdxl-unbox/blob/d5e383fea440aed59d533062f3d8f8435c9a3737/SAE/dataset_iterator.py
+
+Additionally, a ActivationsDataLoader class is provided that allows for
+minimal code changes when switching from the iterator to a DataLoader.
 """
 
 # =========================================================================== #
@@ -191,13 +194,30 @@ class CustomActivationsIterator:
 # =========================================================================== #
 #                             Compatible Dataloader                           #
 # =========================================================================== #
-class FlatteningDataLoader:
+class ActivationsDataLoader:
     """
     DataLoader wrapper that outputs data in same format as
     CustomActivationsIterator
     """
 
-    def __init__(self, dataset, batch_size, total_tokens, num_workers=4):
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        total_tokens: int = 1_000_000_000,
+        num_workers: int = 4,
+    ) -> None:
+        """
+        Initializes the FlatteningDataLoader with a dataset and parameters.
+        Args:
+            dataset (Dataset): A dataset object containing 'activations' and
+                'timestep' keys. Activations should have shape
+                [d_spatial, d_model].
+            batch_size (int): Number of flattened activations per batch.
+            total_tokens (int): Total number of tokens to yield before ending
+                iteration.
+            num_workers (int): Number of worker threads for DataLoader.
+        """
         first_example = dataset[0]["activations"]
         self.d_spatial = first_example.shape[0]
         self.d_in = first_example.shape[1]
