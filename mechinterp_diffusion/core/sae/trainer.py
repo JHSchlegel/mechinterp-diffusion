@@ -10,7 +10,6 @@ checkpointing for SAE models.
 # =========================================================================== #
 
 
-import gc
 import json
 import logging
 import math
@@ -21,10 +20,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import seaborn as sns
 import torch
 from datasets import Dataset
 from geom_median.torch import compute_geometric_median
@@ -41,7 +36,10 @@ sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 )
 from config import TrainerConfig, TrainingConfig
-from utils.activations_iterator import CustomActivationsIterator
+from utils.activations_iterator import (
+    ActivationsDataLoader,
+    CustomActivationsIterator,
+)
 
 from .base_sae import BaseSAE
 
@@ -138,12 +136,22 @@ class SAETrainer:
 
         self.train_dataset.shuffle(seed=self.trainer_cfg.seed)
 
-        self.dataloader = CustomActivationsIterator(
-            dataset=self.train_dataset,
-            batch_size=self.trainer_cfg.effective_batch_size,
-            total_tokens=self.trainer_cfg.num_tokens,
-            buffer_size=self.trainer_cfg.buffer_size,
-        )
+        if self.trainer_cfg.use_activations_iterator:
+            self.dataloader = CustomActivationsIterator(
+                dataset=self.train_dataset,
+                batch_size=self.trainer_cfg.effective_batch_size,
+                total_tokens=self.trainer_cfg.num_tokens,
+                buffer_size=self.trainer_cfg.buffer_size,
+            )
+            logger.info("Using CustomActivationsIterator for data loading. ")
+        else:
+            self.dataloader = ActivationsDataLoader(
+                dataset=self.train_dataset,
+                batch_size=self.trainer_cfg.effective_batch_size,
+                total_tokens=self.trainer_cfg.num_tokens,
+                num_workers=8,
+            )
+            logger.info("Using ActivationsDataLoader for data loading. ")
 
         # ---------------------------------------------------------------------
         # Initialize b_dec and mse_scale from data
@@ -344,170 +352,6 @@ class SAETrainer:
         if self.trainer_cfg.wandb_project and wandb.run:
             wandb.log(log_data, step=step)
 
-    def _plot_feature_activation_histogram(self, step: int) -> None:
-        """Log plot of histogram of L0 norms per sample to checkpoints and
-        wandb
-
-        Args:
-            step (int): Current training step.
-        """
-        # Define variables outside try block for cleanup
-        activations, sae_output, feature_acts, l0_per_sample, df, plot = (
-            None,
-        ) * 6
-        try:
-            self.sae_model.eval()
-
-            # get 50k samples for plotting from dataset
-            tmp_loader = CustomActivationsIterator(
-                dataset=self.train_dataset,
-                batch_size=self.trainer_cfg.effective_batch_size,
-                total_tokens=50_000,
-                buffer_size=self.trainer_cfg.buffer_size,
-            )
-
-            with torch.no_grad():
-                sae_output = torch.cat(
-                    [
-                        self.sae_model(
-                            batch["activations"].to(
-                                self.device, dtype=self.dtype
-                            )
-                        )["feature_acts"]
-                        for batch in tmp_loader.iterate()
-                    ]
-                )
-
-                feature_acts = sae_output.detach().cpu()
-                l0_per_sample = (feature_acts > 0.0).float().sum(dim=-1)
-                df = pd.DataFrame({"l0_norm": l0_per_sample.numpy()})
-
-                plot_dir = self.checkpoint_path / "plots"
-                plot_dir.mkdir(parents=True, exist_ok=True)
-
-                plot_filename = plot_dir / f"l0_histogram_step_{step}.png"
-
-                median = np.median(df["l0_norm"])
-                mean = np.mean(df["l0_norm"])
-                std = np.std(df["l0_norm"])
-                num_samples = len(df)
-
-                fig, ax = plt.subplots(figsize=(10, 6))
-
-                sns.histplot(
-                    data=df,
-                    x="l0_norm",
-                    bins=100,
-                    kde=False,
-                    color="#00B5E2",
-                    edgecolor="white",
-                    linewidth=1,
-                    alpha=0.8,
-                    ax=ax,
-                )
-
-                # -------------------------------------------------------------
-                # Mean/Median Lines
-                # -------------------------------------------------------------
-                ax.axvline(
-                    median,
-                    color="red",
-                    linestyle="--",
-                    linewidth=1.5,
-                    label=f"Median: {median:.2f}",
-                )
-                ax.axvline(
-                    mean,
-                    color="green",
-                    linestyle="-.",
-                    linewidth=1.5,
-                    label=f"Mean: {mean:.2f}",
-                )
-
-                ax.set_title(
-                    f"Distribution of Active Features per Sample (L0 Norm) at Step {step}",  # noqa: E501
-                    fontsize=16,
-                    fontweight="bold",
-                )
-                ax.set_xlabel(
-                    "Number of Active Features (L0 Norm)", fontsize=14
-                )
-                ax.set_ylabel("Frequency", fontsize=14)
-
-                # -------------------------------------------------------------
-                # Statistics Text Box
-                # -------------------------------------------------------------
-                stats_text = (
-                    f"Mean: {mean:.2f}\n"
-                    f"Median: {median:.2f}\n"
-                    f"Std Dev: {std:.2f}\n"
-                    f"Samples: {num_samples}"
-                )
-                ax.text(
-                    0.95,  # x
-                    0.95,  # y
-                    stats_text,
-                    transform=ax.transAxes,
-                    horizontalalignment="right",
-                    verticalalignment="top",
-                    fontsize=10,
-                    bbox=dict(
-                        boxstyle="round,pad=0.5", facecolor="white", alpha=0.7
-                    ),
-                )
-
-                ax.legend()
-                ax.grid(axis="y", alpha=0.4, linestyle="--")
-                plt.tight_layout()
-
-                plt.savefig(
-                    plot_filename,
-                    dpi=150,
-                    bbox_inches="tight",
-                )
-                logger.info(
-                    f"L0 activation histogram saved to {plot_filename}"
-                )
-
-                # if self.trainer_cfg.wandb_project and wandb.run:
-                #     wandb.log(
-                #         {
-                #             "plots/l0_activation_histogram": wandb.Image(
-                #                 str(plot_filename)
-                #             )
-                #         },
-                #         step=step,
-                #     )
-                logger.info(
-                    f"L0 activation histogram saved to {plot_filename} and "
-                    f"logged to wandb."
-                )
-        except Exception as e:
-            logger.error(f"Error during plotting: {e}", exc_info=True)
-
-        finally:
-            # -----------------------------------------------------------------
-            # Clean up to avoid VRAM issues
-            # -----------------------------------------------------------------
-            # Delete references to large temporary tensors and objects
-            del (
-                activations,
-                sae_output,
-                feature_acts,
-                l0_per_sample,
-                df,
-                plot,
-            )
-
-            logger.debug("Cleaning up plotting variables.")
-
-            collected = gc.collect()
-            logger.debug(f"Garbage collector collected {collected} objects.")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            self.sae_model.train()
-
     def _save_checkpoint(self, step: int) -> None:
         """Save model and optimizer state to disk to directory specified in
         config.
@@ -541,7 +385,6 @@ class SAETrainer:
             total=self.total_training_steps,
             desc="Training Progress",
         )
-
         for batch in self.dataloader.iterate():
             if self.global_step >= self.total_training_steps:
                 logger.warning(
@@ -567,13 +410,8 @@ class SAETrainer:
                 )
 
             # -------------------------------------------------------------
-            # Checkpointing and Plotting
+            # Checkpointing
             # -------------------------------------------------------------
-            if (
-                self.trainer_cfg.plot_frequency > 0
-                and self.global_step % self.trainer_cfg.plot_frequency == 0
-            ):
-                self._plot_feature_activation_histogram(self.global_step)
 
             if (
                 self.trainer_cfg.save_frequency > 0
