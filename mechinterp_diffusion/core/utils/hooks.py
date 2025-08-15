@@ -238,8 +238,9 @@ def scale_feature_hook(
     diff = (output[0] - input[0]).permute((0, 2, 3, 1)).to(sae.device)
     sae_input, info = sae.preprocess_input(diff)
     activations: Tensor = F.relu(sae.encode(sae_input))
-    original_activations: Tensor = activations[..., feature_idx].clone()
-    mask: Tensor = torch.zeros_like(activations, device=diff.device)
+    top_acts, _ = sae._get_topk(activations, k=sae.cfg.k)
+    original_activations: Tensor = top_acts[..., feature_idx].clone()
+    mask: Tensor = torch.zeros_like(top_acts, device=diff.device)
     mask[..., feature_idx] = (beta - 1.0) * original_activations.squeeze(-1)
     to_add: Tensor = sae.postprocess_output(mask @ sae.W_dec.weight.T, info)
 
