@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator
 
 import torch
 from datasets import Dataset
+from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -185,3 +186,58 @@ class CustomActivationsIterator:
 
             batch_dict = {"activations": batch, "timestep": batch_timesteps}
             yield batch_dict
+
+
+# =========================================================================== #
+#                             Compatible Dataloader                           #
+# =========================================================================== #
+class FlatteningDataLoader:
+    """
+    DataLoader wrapper that outputs data in same format as
+    CustomActivationsIterator
+    """
+
+    def __init__(self, dataset, batch_size, total_tokens, num_workers=4):
+        first_example = dataset[0]["activations"]
+        self.d_spatial = first_example.shape[0]
+        self.d_in = first_example.shape[1]
+        self.total_tokens = total_tokens
+        self.tokens_yielded = 0
+
+        # Calculate how many examples we need per batch
+        examples_per_batch = max(1, batch_size // self.d_spatial)
+
+        self.loader = DataLoader(
+            dataset,
+            batch_size=examples_per_batch,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+
+    def iterate(self):
+        """Same method as CustomActivationsIterator.iterate()"""
+        while self.tokens_yielded < self.total_tokens:
+            for batch in self.loader:
+                # Flatten activations
+                acts = batch["activations"].view(-1, self.d_in)
+
+                # Fast timestep expansion using torch
+                timesteps = torch.repeat_interleave(
+                    batch["timestep"], self.d_spatial
+                )
+
+                # Check if we'd exceed total_tokens
+                tokens_in_batch = acts.shape[0]
+                if self.tokens_yielded + tokens_in_batch > self.total_tokens:
+                    # Truncate last batch
+                    remaining = self.total_tokens - self.tokens_yielded
+                    acts = acts[:remaining]
+                    timesteps = timesteps[:remaining]
+
+                self.tokens_yielded += acts.shape[0]
+
+                yield {"activations": acts, "timestep": timesteps}
+
+                if self.tokens_yielded >= self.total_tokens:
+                    return
