@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -37,6 +37,14 @@ logger = logging.getLogger(__name__)
 
 PROMPT_PAIRS = [
     {
+        "source": "A headshot photo of a woman",
+        "control": "A headshot photo of a man",
+    },
+    {
+        "source": "A headshot photo of a man",
+        "control": "A headshot photo of a woman",
+    },
+    {
         "source": "A close-up photo of a cat",
         "control": "A close-up photo of a bird",
     },
@@ -44,26 +52,18 @@ PROMPT_PAIRS = [
         "source": "A photo-realistic image of a bird",
         "control": "A photo-realistic image of a cat",
     },
-    # {
-    #     "source": "An oil-painting of a bird",
-    #     "control": "An oil-painting of a cat",
-    # },
-    # {
-    #     "source": "A fantasy illustration of a bird",
-    #     "control": "A fantasy illustration of a cat",
-    # },
-    # {
-    #     "source": "A sci-fi illustration of a bird",
-    #     "control": "A sci-fi illustration of a cat",
-    # },
-    # {
-    #     "source": "A Van Gogh painting of a bird",
-    #     "control": "A Van Gogh painting of a cat",
-    # },
     {
-        "source": "A close-up photo of a red rose.",
-        "control": "A close-up photo of a yellow sunflower.",
+        "source": "An oil-painting of a bird",
+        "control": "A photo realistic image of a bird",
     },
+    {
+        "source": "An oil-painting of a cat",
+        "control": "A photo realistic image of a cat",
+    },
+    # {
+    #     "source": "A close-up photo of a red rose.",
+    #     "control": "A close-up photo of a yellow sunflower.",
+    # },
     # {
     #     "source": "A fantasy portrait of a knight in shining armor.",
     #     "control": "A fantasy portrait of a robot with glowing circuits.",
@@ -72,10 +72,10 @@ PROMPT_PAIRS = [
     #     "source": "A majestic lion resting on savanna grass.",
     #     "control": "A majestic tiger resting on savanna grass.",
     # },
-    {
-        "source": "A vintage steam train in countryside.",
-        "control": "A sleek modern jet in countryside.",
-    },
+    # {
+    #     "source": "A vintage steam train in countryside.",
+    #     "control": "A sleek modern jet in countryside.",
+    # },
     {
         "source": "A crystal clear mountain lake.",
         "control": "A crystal clear ocean bay.",
@@ -102,11 +102,14 @@ class ActivationPatchingConfig(Serializable):
     """Hugging Face model identifier for the diffusion model."""
 
     sae_path: str = (
-        "../../checkpoints/sae/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"  # noqa: E501
+        "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250815_090358/step_488282"  # noqa: E501
     )
     """Path to the trained TopKSAE model directory."""
 
-    hook_name: str = "unet.down_blocks.2.attentions.0"
+    hook_name: str = (
+        # "unet.up_blocks.1.attentions.1"  #
+        "unet.down_blocks.2.attentions.0"
+    )
     """Name of the model component to hook for activation patching."""
 
     torch_dtype: str = "float16"
@@ -142,13 +145,15 @@ class ActivationPatchingConfig(Serializable):
     steps.
     """
 
-    patching_method: str = "ablate_and_replace"
+    patching_method: Literal["replace", "ablate_and_replace"] = (
+        "ablate_and_replace"
+    )
     """Patching method: 'replace' or 'ablate_and_replace'."""
 
-    k_values: List[int] = field(default_factory=lambda: [5, 20, 50, 200, 500])
+    k_values: List[int] = field(default_factory=lambda: [1, 5, 20, 50, 200])
     """Grid of k values (number of top features to patch)."""
 
-    patch_scale: float = 2.0  # 2.0
+    patch_scale: float = 2.0
     """Factor to scale the patch vector by."""
 
     reconstruct_scale: float = 1.0
@@ -597,10 +602,9 @@ def run_experiment_with_k_grid(
     for k in sorted(config.k_values):
         logger.info(f"Running patching with k={k}...")
 
-        # Subset the features for this k value
         causal_feature_indices = all_causal_features[:k]
 
-        # Extract source patch vectors for these features
+        # Extract clean patch vectors for these features
         source_patch_vectors, _ = extract_source_patch_vectors(
             pipe,
             sae,
@@ -710,7 +714,7 @@ def create_paper_figure(
     )
     plt.close()
 
-    logger.info(f"Paper-ready figure saved to {save_dir / 'paper_figure.pdf'}")
+    logger.info(f"Figure saved to {save_dir / 'paper_figure.pdf'}")
 
 
 if __name__ == "__main__":
