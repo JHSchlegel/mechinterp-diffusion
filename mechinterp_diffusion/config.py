@@ -3,15 +3,17 @@ Configuration file for extracting latent representations from multi-step
 diffusion models and training sparse autoencoders on these representations.
 """
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+
+
 import datetime
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
-# =========================================================================== #
-#                            Packages and Presets                             #
-# =========================================================================== #
 import torch
 from hydra.core.config_store import ConfigStore
 from simple_parsing import Serializable
@@ -86,7 +88,7 @@ class TopKSAEConfig(BaseSAEConfig):
     How many topk dead features to use for auxiliary loss term.
     """
 
-    auxk_loss_weight: float = 1 / 32  #  0.1
+    auxk_loss_weight: float = 1 / 32
     """
     Weight for the auxiliary loss term in the TopK architecture.
     """
@@ -252,6 +254,12 @@ class TrainerConfig(Serializable):
     Number of examples to buffer at once for dataloading.
     """
 
+    use_activations_iterator: bool = False
+    """
+    Whether to use CustomActivationsIterator (True) or PyTorch DataLoader
+    (False).
+    """
+
     # -------------------------------------------------------------------------
     # Training settings
     # -------------------------------------------------------------------------
@@ -265,7 +273,7 @@ class TrainerConfig(Serializable):
     effective_batch_size: int = 4096
     """Number of activation vectors per training batch."""
 
-    num_tokens: int = int(5e8)
+    num_tokens: int = int(2e9)
     """
     Number of tokens to process during training. This is the number of
     activation vectors to process, not the number of training steps. The number
@@ -278,7 +286,7 @@ class TrainerConfig(Serializable):
     timesteps in the dataset.
     """
 
-    lr_scheduler_type: str = "cosine"
+    lr_scheduler_type: str = "constant"
     """
     Type of learning rate scheduler to use. See Hugging Face documentation for
     more details:
@@ -297,7 +305,7 @@ class TrainerConfig(Serializable):
     - “warmup_stable_decay” = get_wsd_schedule
     """
 
-    warmup_steps: int = 1000
+    warmup_steps: int = 0
     """Number of learning rate warmup steps."""
 
     adam_beta1: float = 0.9
@@ -329,9 +337,6 @@ class TrainerConfig(Serializable):
     log_frequency: int = 1
     """Log metrics to wandb every N steps."""
 
-    plot_frequency: int = 50_000
-    """Generate every N steps."""
-
     save_frequency: int = 50_000
     """Save model checkpoint every N steps."""
 
@@ -362,7 +367,7 @@ class TrainingConfig(Serializable):
                 if self.trainer.target_timesteps
                 else "all"
             )
-            if self.sae.use_batch_topk:
+            if hasattr(self.sae, "use_batch_topk") and self.sae.use_batch_topk:
                 sae_name = "BatchTopKSAE"
             else:
                 sae_name = sae_type
@@ -487,7 +492,7 @@ class SAEInterventionConfig(Serializable):
             )
 
         if self.intervention_mode == "reconstruct":
-            self.intervention_values = [0.0]
+            self.intervention_values = [1.0]
 
         if self.timestep_values and self.timesteps:
             raise ValueError(

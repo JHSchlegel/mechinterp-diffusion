@@ -49,6 +49,8 @@ class TopKSAE(BaseSAE):
 
         super().__init__(cfg)
 
+        self._initialize_weights()
+
         if cfg.normalize_decoder:
             self.unit_norm_decoder_()
 
@@ -197,14 +199,15 @@ class TopKSAE(BaseSAE):
         """
         l0_loss = (acts_topk > 0.0).float().sum(-1).mean()
         l1_loss = acts_topk.float().abs().sum(-1).mean()
-        l2_loss = (x_reconstructed.float() - x.float()).pow(
-            2
-        ).mean() * self.mse_scale
-
+        l2_loss = (x_reconstructed.float() - x.float()).pow(2).sum()
+        mse = (x_reconstructed.float() - x.float()).pow(2).mean()
         explained_var = explained_variance(
             x_reconstructed=x_reconstructed, x=x
         )
-        # total_var = (x - x.mean(0)).float().pow(2).mean()
+
+        total_var = (x - x.mean(0)).float().pow(2).sum()
+
+        fvu = l2_loss / total_var
 
         num_dead_features = (
             self.num_tokens_inactive >= self.cfg.num_tokens_dead_threshold
@@ -229,7 +232,8 @@ class TopKSAE(BaseSAE):
         # Combine Losses
         # ---------------------------------------------------------------------
         loss = (
-            l2_loss
+            # mse * self.mse_scale
+            fvu
             + auxk_loss * self.cfg.auxk_loss_weight * auxk_scale
             + l1_loss * self.cfg.l1_loss_weight
         )
@@ -243,6 +247,8 @@ class TopKSAE(BaseSAE):
             "l0_loss": l0_loss,
             "l1_loss": l1_loss,
             "l2_loss": l2_loss,
+            "mse": mse,
+            # "normalized_mse": mse * self.mse_scale,
             "explained_variance": explained_var,
             "num_dead_features": num_dead_features,
             "perc_dead_features": perc_dead_features,

@@ -147,7 +147,7 @@ class CacheActivationsRunner:
         # hacky way to prevent initializing those objects when
         # loading activations from disk
         if self.cfg.hook_names is not None:
-            from diffusion.hooked_sd_pipeline import (
+            from core.diffusion.hooked_sd_pipeline import (
                 HookedStableDiffusionPipeline,
                 HookedStableDiffusionXLPipeline,
             )
@@ -236,17 +236,17 @@ class CacheActivationsRunner:
 
         if self.cfg.dataset_name == "flickr30k":
             self.dataset = DatasetDict.load_from_disk(
-                "../../../prompts/flickr30k_captions"
+                "../../prompts/flickr30k_captions"
             )[self.cfg.dataset_split]
 
         elif self.cfg.dataset_name == "laion":
             self.dataset = DatasetDict.load_from_disk(
-                "../../../data/prompts/laion-coco_captions"
+                "../../data/prompts/laion-coco_captions"
             )[self.cfg.dataset_split]
 
         elif self.cfg.dataset_name == "birds_vs_cats":
             self.dataset = DatasetDict.load_from_disk(
-                "../../../data/prompts/birds_vs_cats_captions"
+                "../../data/prompts/birds_vs_cats_captions"
             )[self.cfg.dataset_split]
 
         else:
@@ -427,10 +427,6 @@ class CacheActivationsRunner:
             "activations": activations,
             "timestep": timesteps,
         }
-
-        assert (
-            self.data_has_labels and labels is not None
-        ), "Labels must be provided if the dataset has labels."
 
         if self.data_has_labels:
             n_repeats = len(timesteps) // batch_size

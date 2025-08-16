@@ -565,7 +565,9 @@ class TopExamplesExtractor:
             )
             ax.imshow(np.array(overlay.convert("RGB")))
 
-            ax.set_title(f"$t_{{max}}=${example['timestep']:.3f}", fontsize=10)
+            ax.set_title(
+                f"$t_{{peak}}=${example['timestep']:.3f}", fontsize=10
+            )
 
             if i == 0:
                 # For the first plot, keep the ylabel visible but hide
