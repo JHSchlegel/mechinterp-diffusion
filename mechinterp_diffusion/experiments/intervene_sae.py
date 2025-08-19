@@ -1,12 +1,36 @@
 """
-This module implements SAE-based interventions for diffusion models. It allows
-for different types of interventions (add, scale, reconstruct) on specific
-features of the SAE model during specific timesteps of the diffusion process.
+This module implements SAE-based interventions for diffusion models. It
+provides three different intervention modes with multiple hook types.
 
+
+INTERVENTION MODES:
+1. Grid Mode (--intervention_mode grid):
+   Creates a grid visualization comparing multiple features and intervention
+    values.
+
+2. Trajectory Mode (--intervention_mode trajectory):
+   Analyzes the diffusion process over time, capturing intermediate steps.
+   Shows how interventions affect the generation trajectory with optional
+   feature activation heatmaps.
+
+3. TopK Trace Mode (--intervention_mode topk_trace):
+   Performs cascade analysis by identifying the most active feature at a
+   specific timestep and analyzing the downstream effects when that feature
+   is knocked out.
+
+HOOK TYPES:
+- add: Adds a constant value to specific SAE feature activations
+- scale: Multiplies specific SAE feature activations by a scaling factor
+- reconstruct: Replaces module outputs with SAE reconstructions
+
+TEMPORAL CONTROL:
+- --timesteps: Apply intervention at specific timesteps
+- --timestep_values: Apply different intervention values at different timesteps
 
 Example usage:
-python intervene_sae.py --hook_type add --feature_idx 1674 --value 5.0
-python intervene_sae.py --hoook_type scale --feature_idx 1674 --value 5.0
+python intervene_sae.py --intervention_mode grid --hook_type add
+python intervene_sae.py --intervention_mode trajectory --hook_type scale
+python intervene_sae.py --intervention_mode topk_trace --hook_type scale
 """
 
 # =========================================================================== #
