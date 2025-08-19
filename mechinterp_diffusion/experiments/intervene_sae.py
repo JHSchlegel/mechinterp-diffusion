@@ -24,8 +24,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1311,12 +1309,18 @@ class SAEInterventionManager:
                 f"Knockout Timestep (diffusion time): {diffusion_time:.4f}\n"
             )
             f.write(f"Knocked-out Feature ID: {feat_to_knockout}\n")
-        logger.info(f"Knockout details saved to {info_path}")
 
         num_steps = len(data_orig["timesteps"])
         activations_orig = np.stack(data_orig["activations"])
         activations_int = np.stack(data_int["activations"])
         analysis_range = range(knockout_timestep + 1, num_steps)
+
+        if not analysis_range:
+            logger.warning(
+                "No timesteps available for analysis after knockout. Skipping cascade plots."  # noqa: E501
+            )
+            return
+
         analysis_diffusion_times = [
             self._convert_timestep_to_diffusion_time(
                 self.scheduler_timesteps[t]
@@ -1328,266 +1332,79 @@ class SAEInterventionManager:
         for t in analysis_range:
             vec_orig = activations_orig[t]
             vec_int = activations_int[t]
-            # Cosine similarity
             dot_product = np.dot(vec_orig, vec_int)
             norm_prod = np.linalg.norm(vec_orig) * np.linalg.norm(vec_int)
             cosine_sims.append(dot_product / norm_prod if norm_prod > 0 else 0)
-            # L2 distance
             l2_distances.append(np.linalg.norm(vec_orig - vec_int))
 
-        fig2, axes2 = plt.subplots(2, 1, figsize=(16, 10), sharex=True)
-        axes2[0].plot(
+        fig_cos, ax_cos = plt.subplots(figsize=(10, 6))
+        ax_cos.plot(
             analysis_diffusion_times,
             cosine_sims,
             "o-",
-            label="Cosine Similarity",
-        )
-        axes2[0].set_title(
-            "Activation Vector Similarity After Knockout", fontsize=16
-        )
-        axes2[0].set_ylabel("Cosine Similarity", fontsize=12)
-        axes2[0].grid(True, linestyle="--", alpha=0.6)
-        axes2[0].legend()
-        axes2[0].set_ylim(-1.05, 1.05)
-
-        axes2[1].plot(
-            analysis_diffusion_times,
-            l2_distances,
-            "s-",
-            color="red",
-            label="L2 Distance",
-        )
-        axes2[1].set_title(
-            "Activation Vector Distance After Knockout", fontsize=16
-        )
-        axes2[1].set_xlabel("Diffusion Time", fontsize=12)
-        axes2[1].set_ylabel("L2 Distance", fontsize=12)
-        axes2[1].grid(True, linestyle="--", alpha=0.6)
-        axes2[1].legend()
-
-        fig2.tight_layout()
-        plt.savefig(
-            os.path.join(output_dir, "2_cascade_metrics.png"),
-            bbox_inches="tight",
-        )
-        plt.close(fig2)
-
-        # --- Plot 3: Statistical Analysis of Activation Changes ---
-        delta_activations = (
-            activations_int[list(analysis_range)]
-            - activations_orig[list(analysis_range)]
-        ).flatten()
-
-        fig3, axes3 = plt.subplots(1, 2, figsize=(10, 7))
-
-        axes3[0].hist(delta_activations, bins=50, color="purple", alpha=0.7)
-        axes3[0].set_title("Distribution of Activation Changes", fontsize=16)
-        axes3[0].set_xlabel(
-            "Change in Activation (Intervened - Original)", fontsize=12
-        )
-        axes3[0].set_ylabel("Frequency", fontsize=12)
-        axes3[0].axvline(0, color="k", linestyle="--", lw=2)
-        axes3[0].grid(True, linestyle="--", alpha=0.5)
-
-        axes3[1].boxplot(delta_activations, vert=False, patch_artist=True)
-        axes3[1].set_title("Summary of Activation Changes", fontsize=16)
-        axes3[1].set_xlabel("Change in Activation", fontsize=12)
-        axes3[1].grid(True, linestyle="--", alpha=0.5)
-        axes3[1].axvline(0, color="k", linestyle="--", lw=2)
-
-        fig3.suptitle(
-            f"Statistical Impact on All Feature Activations Post-Knockout (t > {knockout_timestep})",  # noqa: E501
-            fontsize=18,
-            y=1.02,
-        )
-        fig3.tight_layout()
-        plt.savefig(
-            os.path.join(output_dir, "3_activation_statistics.png"),
-            bbox_inches="tight",
-        )
-        plt.close(fig3)
-
-        delta_activations_by_time = []
-        timestep_labels = []
-
-        for i, t in enumerate(analysis_range):
-            delta_t = activations_int[t] - activations_orig[t]
-            delta_activations_by_time.append(delta_t)
-            timestep_labels.append(f"t={analysis_diffusion_times[i]:.3f}")
-
-        # Reverse order so early times (smaller t values) are at top
-        delta_activations_by_time = delta_activations_by_time[::-1]
-        timestep_labels = timestep_labels[::-1]
-        analysis_diffusion_times_rev = analysis_diffusion_times[::-1]
-
-        # Create histogram ridges plot
-        fig3, ax3 = plt.subplots(1, 1, figsize=(16, 12))
-
-        # Parameters for ridge plot
-        ridge_height = 0.8  # Height of each ridge
-        ridge_spacing = 1.0  # Spacing between ridges
-        colors = plt.cm.viridis(
-            np.linspace(0, 1, len(delta_activations_by_time))
-        )
-
-        # Find global min/max for consistent x-axis
-        all_deltas = np.concatenate(delta_activations_by_time)
-        x_min, x_max = np.percentile(
-            all_deltas, [1, 99]
-        )  # Use percentiles to avoid outliers
-
-        # Use a reasonable number of bins
-        n_bins = min(50, max(10, int(np.sqrt(len(all_deltas)))))
-        bin_edges = np.linspace(x_min, x_max, n_bins + 1)
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_width = bin_edges[1] - bin_edges[0]
-
-        y_positions = []
-
-        for i, (delta_t, label, color) in enumerate(
-            zip(
-                delta_activations_by_time,
-                timestep_labels,
-                colors,
-                strict=False,
-            )
-        ):
-            # Calculate histogram
-            hist, _ = np.histogram(delta_t, bins=bin_edges, density=True)
-
-            # Normalize histogram height for consistent ridge heights
-            if hist.max() > 0:
-                hist = hist / hist.max() * ridge_height
-
-            # Calculate y position for this ridge (early times at top)
-            y_base = i * ridge_spacing
-            y_positions.append(y_base)
-
-            # Create ridge using step plot for histogram
-            for _, (bin_center, height) in enumerate(
-                zip(bin_centers, hist, strict=False)
-            ):  # noqa: E501
-                ax3.bar(
-                    bin_center,
-                    height,
-                    bottom=y_base,
-                    width=bin_width * 0.8,
-                    color=color,
-                    alpha=0.7,
-                    edgecolor="black",
-                    linewidth=0.1,
-                )
-
-            # Add baseline
-            ax3.axhline(y=y_base, color="black", alpha=0.2, linewidth=0.5)
-
-            # Add text label on the left
-            ax3.text(
-                x_min - (x_max - x_min) * 0.05,
-                y_base + ridge_height / 2,
-                label,
-                ha="right",
-                va="center",
-                fontsize=10,
-                fontweight="bold",
-            )
-
-        # Add vertical line at x=0
-        ax3.axvline(
-            0,
-            color="red",
-            linestyle="--",
+            color="midnightblue",
+            markersize=6,
             linewidth=2,
-            alpha=0.8,
-            label="No Change",
-            zorder=10,
         )
-
-        # Customize the plot
-        ax3.set_xlabel(
-            "Change in Activation (Intervened - Original)", fontsize=14
-        )
-        ax3.set_ylabel("Diffusion Time (Early → Late)", fontsize=14)
-        ax3.set_title(
-            "Histogram Ridges: Activation Changes Over Time After Knockout",
-            fontsize=16,
-            pad=20,
-        )
-
-        # Remove y-axis ticks since we have labels on the side
-        ax3.set_yticks([])
-
-        # Extend x-axis slightly for labels
-        x_range_extended = x_max - x_min
-        ax3.set_xlim(
-            x_min - x_range_extended * 0.15, x_max + x_range_extended * 0.05
-        )
-        ax3.set_ylim(
-            -ridge_spacing * 0.5,
-            (len(delta_activations_by_time)) * ridge_spacing,
-        )
-
-        # Add grid
-        ax3.grid(True, linestyle="--", alpha=0.3, axis="x")
-
-        # Add colorbar to show time progression
-        sm = plt.cm.ScalarMappable(
-            cmap="viridis",
-            norm=plt.Normalize(
-                vmin=min(analysis_diffusion_times_rev),
-                vmax=max(analysis_diffusion_times_rev),
-            ),
-        )
-        sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax3, shrink=0.8, pad=0.02)
-        cbar.set_label("Diffusion Time", fontsize=12)
-
-        fig3.tight_layout()
+        ax_cos.set_ylabel("Cosine Similarity", fontsize=16)
+        ax_cos.set_xlabel("Diffusion Time", fontsize=16)
+        ax_cos.tick_params(axis="both", which="major", labelsize=12)
+        ax_cos.grid(True, linestyle="--", alpha=0.6)
+        ax_cos.set_ylim(-1, 1)
+        fig_cos.tight_layout()
         plt.savefig(
-            os.path.join(output_dir, "3_activation_density_ridges.png"),
+            os.path.join(output_dir, "cosine_similarity.png"),
             bbox_inches="tight",
             dpi=300,
         )
-        plt.close(fig3)
+        plt.close(fig_cos)
 
-        ridge_data = []
+        fig_l2, ax_l2 = plt.subplots(figsize=(10, 6))
+        ax_l2.plot(
+            analysis_diffusion_times,
+            l2_distances,
+            "o-",
+            color="midnightblue",
+            markersize=6,
+            linewidth=2,
+        )
+        ax_l2.set_ylabel("L2 Distance", fontsize=16)
+        ax_l2.set_xlabel("Diffusion Time", fontsize=16)
+        ax_l2.tick_params(axis="both", which="major", labelsize=12)
+        ax_l2.grid(True, linestyle="--", alpha=0.6)
+        ax_l2.set_ylim(bottom=0)
+        fig_l2.tight_layout()
+        plt.savefig(
+            os.path.join(output_dir, "l2_distance.png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close(fig_l2)
+
+        delta_activations_by_time = []
+        timestep_labels = []
         inactive_counts = []
         total_counts = []
-
         selected_indices = list(range(0, len(analysis_range), 4))
-        if len(analysis_range) - 1 not in selected_indices:
-            selected_indices.append(
-                len(analysis_range) - 1
-            )  # Always include the last one
+        if (
+            len(analysis_range) > 0
+            and len(analysis_range) - 1 not in selected_indices
+        ):
+            selected_indices.append(len(analysis_range) - 1)
 
         for idx in selected_indices:
-            i = idx
-            t = list(analysis_range)[i]
-            orig_t = activations_orig[t]
-            int_t = activations_int[t]
+            t = list(analysis_range)[idx]
+            orig_t, int_t = activations_orig[t], activations_int[t]
             delta_t = int_t - orig_t
+            delta_activations_by_time.append(delta_t)
+            timestep_labels.append(f"t={analysis_diffusion_times[idx]:.3f}")
 
-            # Filter out features that were zero both before and after
             active_mask = ~((np.abs(orig_t) < 1e-8) & (np.abs(int_t) < 1e-8))
-            delta_t_active = delta_t[active_mask]
-
-            # Count inactive features
             n_total = len(delta_t)
             n_inactive = n_total - np.sum(active_mask)
             inactive_counts.append(n_inactive)
             total_counts.append(n_total)
 
-            time_label = f"t={analysis_diffusion_times[i]:.3f}"
-            for val in delta_t_active:
-                ridge_data.append(
-                    {
-                        "activation_change": val,
-                        "timestep": time_label,
-                        "diffusion_time": analysis_diffusion_times[i],
-                    }
-                )
-
-        # Save inactive feature statistics for selected timepoints
         inactive_stats_path = os.path.join(
             output_dir, "inactive_feature_stats.txt"
         )
@@ -1605,90 +1422,77 @@ class SAEInterventionManager:
             ):
                 active = total - inactive
                 inactive_pct = (inactive / total * 100) if total > 0 else 0
-                i = selected_indices[idx]
-                time_label = f"t={analysis_diffusion_times[i]:.3f}"
+                time_label = (
+                    f"t={analysis_diffusion_times[selected_indices[idx]]:.3f}"
+                )
                 f.write(
                     f"{time_label:<12} {total:<8} {inactive:<10} {active:<8} {inactive_pct:<12.1f}\n"  # noqa: E501
                 )
 
-        # Create ridge plot
-        df = pd.DataFrame(ridge_data)
-        df = df.sort_values("diffusion_time")
+        delta_activations_by_time = delta_activations_by_time[::-1]
+        timestep_labels = timestep_labels[::-1]
 
-        # get nubmer of activation that are approx 0
-        num_approx_zero = np.sum(np.abs(df["activation_change"]) < 1e-8)
-
-        logger.info(
-            f"Number of approx. zero activations: {num_approx_zero}/{len(df)} "
-            f"min: {df['activation_change'].min()}, "
-            f"max: {df['activation_change'].max()})"
+        fig_ridge, ax_ridge = plt.subplots(figsize=(8, 10))
+        colors = plt.cm.viridis(
+            np.linspace(0, 1, len(delta_activations_by_time))
         )
+        all_deltas = np.concatenate(delta_activations_by_time)
+        x_min, x_max = np.percentile(all_deltas, [1, 99])
 
-        sns.set_theme(style="white", rc={"axes.facecolor": (0, 0, 0, 0)})
-        n_times = len(df["timestep"].unique())
-        pal = sns.cubehelix_palette(n_times, rot=-0.25, light=0.7)
+        n_bins = 200
 
-        g = sns.FacetGrid(
-            df,
-            row="timestep",
-            hue="timestep",
-            aspect=5,
-            height=1.5,
-            palette=pal,
-        )
-        g.map(
-            sns.kdeplot,
-            "activation_change",
-            bw_adjust=0.5,
-            clip_on=False,
-            fill=True,
-            alpha=1,
-            linewidth=1.5,
-        )
-        g.map(
-            sns.kdeplot,
-            "activation_change",
-            clip_on=False,
-            color="w",
-            lw=2,
-            bw_adjust=0.5,
-        )
-
-        # Add labels
-        def label(x, color, label):
-            ax = plt.gca()
-            ax.text(
-                0,
-                0.2,
-                label,
-                fontweight="bold",
+        for i, (delta_t, label, color) in enumerate(
+            zip(
+                delta_activations_by_time,
+                timestep_labels,
+                colors,
+                strict=False,
+            )
+        ):
+            y_base = i
+            hist, bin_edges = np.histogram(
+                delta_t, bins=n_bins, range=(x_min, x_max), density=True
+            )
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            if hist.max() > 0:
+                hist = hist / hist.max() * 0.9
+            ax_ridge.bar(
+                bin_centers,
+                hist,
+                bottom=y_base,
+                width=(x_max - x_min) / n_bins,
                 color=color,
+                alpha=0.8,
+                edgecolor=color,
+            )
+            ax_ridge.text(
+                x_max,
+                y_base + 0.2,
+                label,
                 ha="left",
                 va="center",
-                transform=ax.transAxes,
-                fontsize=8,
+                fontsize=10,
+                weight="bold",
             )
 
-        g.map(label, "activation_change")
-
-        xlim_lower = df["activation_change"].quantile(0.01)
-        xlim_upper = df["activation_change"].quantile(0.99)
-        g.set(xlim=(xlim_lower, xlim_upper))
-
-        g.figure.subplots_adjust(hspace=-0.25)
-        g.set_titles("")
-        g.set(yticks=[], ylabel="")
-        g.despine(bottom=True, left=True)
-
-        g.set_xlabels("Change in Activation", fontsize=10)
-
-        plt.tight_layout()
+        ax_ridge.axvline(
+            0, color="red", linestyle="--", linewidth=1.5, alpha=0.8
+        )
+        ax_ridge.set_xlim(x_min, x_max * 1.25)
+        ax_ridge.set_yticks([])
+        ax_ridge.spines[["left", "right", "top"]].set_visible(False)
+        ax_ridge.grid(True, axis="x", linestyle="--", alpha=0.5)
+        ax_ridge.set_xlabel("Change in Activation", fontsize=16)
+        ax_ridge.tick_params(axis="x", which="major", labelsize=12)
+        fig_ridge.tight_layout()
         plt.savefig(
             os.path.join(output_dir, "activation_ridges.png"),
             bbox_inches="tight",
             dpi=300,
         )
-        plt.close()
+        plt.close(fig_ridge)
+
+        plt.rcdefaults()
 
 
 if __name__ == "__main__":
