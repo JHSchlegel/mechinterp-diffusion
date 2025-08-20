@@ -223,6 +223,8 @@ class SAEInterventionManager:
         if not self.config.prompts:
             dataset = load_from_disk(self.config.dataset_path)
             dataset_split = dataset[self.config.dataset_split]
+            # shuffle huggingface dataset:
+            dataset_split = dataset_split.shuffle(seed=self.config.seed)
             logger.info(f"Loaded dataset with {len(dataset_split)} examples")
             for i in range(min(self.config.num_prompts, len(dataset_split))):
                 prompt_entry = dataset_split[i]
@@ -1009,7 +1011,11 @@ class SAEInterventionManager:
         # Feature/row labels
         for i, feat in enumerate(feature_indices):
             axes[i, 0].set_ylabel(
-                f"Feature {feat}", fontsize=14, fontweight="bold", labelpad=20
+                f"Feature {feat}",
+                fontsize=14,
+                fontweight="bold",
+                labelpad=60,
+                rotation=0,
             )
 
         for i in range(n_rows):
