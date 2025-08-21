@@ -6,6 +6,7 @@ Module for automated activation patching experiments on diffusion models.
 #                           Packages and Presets                              #
 # =========================================================================== #
 
+import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -49,6 +50,10 @@ PROMPT_PAIRS = [
     # {
     #     "source": "A headshot photo of a man",
     #     "control": "A headshot photo of a woman",
+    # },
+    # {
+    #     "source": "A high-resolution photo of a rose",
+    #     "control": "A high-resolution photo of a dog",
     # },
     {
         "source": "A high-resolution photo of a cat.",
@@ -295,7 +300,7 @@ def find_top_k_features(
 
         with torch.no_grad():
             all_feature_acts = []
-            for t_idx in timestep_indices:
+            for t_idx in range(config.num_inference_steps):
                 # Extract cached activations
                 input_cached = cache["input"][hook_name][:, t_idx]
                 output_cached = cache["output"][hook_name][:, t_idx]
@@ -558,6 +563,10 @@ def run_experiment_with_k_grid(
     )
     base_save_dir.mkdir(parents=True, exist_ok=True)
 
+    # Save config:
+    with open(base_save_dir / "config.json", "w") as f:
+        json.dump(config.to_dict(), f, indent=4)
+
     # Generate source image once
     generator = torch.Generator(config.device).manual_seed(config.seed)
     source_img = pipe(
@@ -694,18 +703,18 @@ def create_paper_figure(
 
     # Control image on the left
     axes[0].imshow(results["control_img"])
-    axes[0].set_title("Control", fontsize=12, fontweight="bold")
+    axes[0].set_title("Control", fontsize=28, fontweight="bold")
     axes[0].axis("off")
 
     # K variations in the middle (lowest to highest)
     for i, k in enumerate(sorted_k, 1):
         axes[i].imshow(results["k_results"][k])
-        axes[i].set_title(f"{k} Features", fontsize=12, fontweight="bold")
+        axes[i].set_title(f"{k} Features", fontsize=28, fontweight="bold")
         axes[i].axis("off")
 
     # Source image on the right
     axes[-1].imshow(results["source_img"])
-    axes[-1].set_title("Source", fontsize=12, fontweight="bold")
+    axes[-1].set_title("Source", fontsize=28, fontweight="bold")
     axes[-1].axis("off")
 
     # Adjust layout and save
