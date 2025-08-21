@@ -109,12 +109,11 @@ echo "--- RUNNING TRAJECTORY EXPERIMENTS ---"
 # echo "--- TRAJECTORY EXPERIMENTS COMPLETE ---"
 
 
-# ===================================================================================
+# =============================================================================
 # EXPERIMENT 2: GRID PLOT (Intervening at all timesteps)
 #
 # Goal: Compare features and activation strengths across all diffusion steps.
-# ===================================================================================
-# echo "--- RUNNING GRID EXPERIMENTS ---"
+# =============================================================================
 
 # --------------------------------------------------------------------------- #
 #                    Down 2.0 Low-Resolution Intervention                     #
@@ -199,11 +198,11 @@ python intervene_sae.py \
 
 #
 
-# ===================================================================================
+# =============================================================================
 # EXPERIMENT 3: TOP-K TRACE (Knockout Cascade Analysis)
 #
 # Goal: Knock out a key feature to analyze downstream causal effects.
-# ===================================================================================
+# =============================================================================
 # echo "--- RUNNING TOP-K TRACE (KNOCKOUT) EXPERIMENT ---"
 # python intervene_sae.py \
 #     --intervention_mode topk_trace --hook_type scale \
@@ -215,32 +214,15 @@ python intervene_sae.py \
 # echo "--- TOP-K TRACE EXPERIMENT COMPLETE ---"
 
 
-# echo "All selected experiments have finished."
-
-
-# ===================================================================================
+# =============================================================================
 # EXPERIMENT 4: RECONSTRUCTION EXPERIMENTS
 #
 # Goal: Test SAE reconstruction quality with simple LAION-COCO style prompts
 # Testing both attention blocks and their respective SAEs
-# ===================================================================================
+# =============================================================================
 
 # screen -S reconstruction_experiment bash -c '
 # echo "--- RUNNING RECONSTRUCTION EXPERIMENTS ---"
-
-# # Simple LAION-COCO style prompts
-# SIMPLE_PROMPTS=(
-#     "A bedroom with white walls and blue curtains."
-#     "A kitchen with wooden cabinets and granite countertops."
-#     "The red Ferrari is sleek and fast."
-#     "The golden retriever is fluffy and friendly."
-#     "A living room with leather sofas and glass tables."
-#     "The laptop is silver and thin."
-#     "A garden with green grass and colorful flowers."
-#     "The bicycle is black and sturdy."
-#     "The coffee mug is white and ceramic."
-#     "A sunset with orange clouds and purple sky."
-# )
 
 # # SAE paths and hook names for the two attention blocks
 # SAE_PATHS=(
