@@ -719,7 +719,7 @@ class SAEInterventionManager:
         fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
         title_font_properties = {
-            "fontsize": 14,
+            "fontsize": 28,
             "fontweight": "bold",
             "pad": 10,
         }
@@ -785,36 +785,36 @@ class SAEInterventionManager:
         fig, axes = plt.subplots(3, n_steps, figsize=(n_steps * 4, 12))
         axes[0, 0].set_ylabel(
             "Original",
-            fontsize=14,
+            fontsize=28,
             fontweight="bold",
             rotation=0,
-            labelpad=60,
+            labelpad=120,
             verticalalignment="center",
         )
         if hasattr(self, "config") and self.config.hook_type == "reconstruct":
             axes[1, 0].set_ylabel(
                 "Reconstruction",
-                fontsize=14,
+                fontsize=28,
                 fontweight="bold",
                 rotation=0,
-                labelpad=60,
+                labelpad=120,
                 verticalalignment="center",
             )
         else:
             axes[1, 0].set_ylabel(
                 "Intervened",
-                fontsize=14,
+                fontsize=28,
                 fontweight="bold",
                 rotation=0,
-                labelpad=60,
+                labelpad=120,
                 verticalalignment="center",
             )
         axes[2, 0].set_ylabel(
             "Difference",
-            fontsize=14,
+            fontsize=28,
             fontweight="bold",
             rotation=0,
-            labelpad=60,
+            labelpad=120,
             verticalalignment="center",
         )
 
@@ -1005,16 +1005,16 @@ class SAEInterventionManager:
         for j, val in enumerate(intervention_values):
             title_text = str(val) if isinstance(val, str) else f"ξ={val:.2f}"
             axes[0, j].set_title(
-                title_text, pad=10, fontsize=14, fontweight="bold"
+                title_text, pad=10, fontsize=28, fontweight="bold"
             )
 
         # Feature/row labels
         for i, feat in enumerate(feature_indices):
             axes[i, 0].set_ylabel(
                 f"Feature {feat}",
-                fontsize=14,
+                fontsize=28,
                 fontweight="bold",
-                labelpad=60,
+                labelpad=120,
                 rotation=0,
             )
 
@@ -1079,13 +1079,13 @@ class SAEInterventionManager:
                 str(val) if isinstance(val, str) else f"Value: {val:.2f}"
             )
             axes_diff[0, j].set_title(
-                title_text, pad=10, fontsize=14, fontweight="bold"
+                title_text, pad=10, fontsize=28, fontweight="bold"
             )
 
         # Feature/row labels
         for i, feat in enumerate(feature_indices):
             axes_diff[i, 0].set_ylabel(
-                f"Feature {feat}", labelpad=20, fontsize=14, fontweight="bold"
+                f"Feature {feat}", labelpad=20, fontsize=28, fontweight="bold"
             )
 
         for i in range(n_rows):
