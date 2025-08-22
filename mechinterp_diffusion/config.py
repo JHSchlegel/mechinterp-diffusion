@@ -403,7 +403,7 @@ class SAEInterventionConfig(Serializable):
     """Hugging Face model ID"""
 
     sae_path: str = (
-        "../../checkpoints/sae/TopKSAE_dsae-5120_timesteps-all_20250523_212803/step_488282"
+        "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282"  # noqa: E501
     )
     """Path to SAE model"""
 
@@ -470,7 +470,7 @@ class SAEInterventionConfig(Serializable):
     guidance_scale: float = 9.0
     """Guidance scale for classifier-free guidance"""
 
-    torch_dtype: str = "float32"
+    torch_dtype: str = "float16"
     """Torch data type"""
 
     topk_trace_k: int = 10
@@ -481,14 +481,6 @@ class SAEInterventionConfig(Serializable):
             raise NotImplementedError(
                 "Different intervention strenghts across timesteps are not "
                 "supported for grid intervention mode."
-            )
-
-        if (self.intervention_mode == "trajectory") and len(
-            self.intervention_values
-        ) > 1:
-            raise NotImplementedError(
-                "Multiple intervention values are not supported for "
-                "trajectory intervention and reconstruction mode."
             )
 
         if self.intervention_mode == "reconstruct":
@@ -535,7 +527,7 @@ class AblationConfig:
     """Path to the training dataset containing activations """
 
     test_dataset: str = (
-        "/media/Thesis/mechinterp-diffusion/data/activations/stable-diffusion-2-1/laion/test/subset_size-50000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
+        "/media/Thesis/mechinterp-diffusion/data/activations/stable-diffusion-2-1/laion/test/subset_size-10000/25-inference-steps/every-1-steps/unet.down_blocks.2.attentions.0"  # noqa: E501
     )
     """Path to the test dataset containing activations """
 

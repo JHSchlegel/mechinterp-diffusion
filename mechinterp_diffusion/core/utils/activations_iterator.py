@@ -206,6 +206,7 @@ class ActivationsDataLoader:
         batch_size: int,
         total_tokens: int = 1_000_000_000,
         num_workers: int = 4,
+        shuffle: bool = True,
     ) -> None:
         """
         Initializes the FlatteningDataLoader with a dataset and parameters.
@@ -214,9 +215,12 @@ class ActivationsDataLoader:
                 'timestep' keys. Activations should have shape
                 [d_spatial, d_model].
             batch_size (int): Number of flattened activations per batch.
-            total_tokens (int): Total number of tokens to yield before ending
-                iteration.
-            num_workers (int): Number of worker threads for DataLoader.
+            total_tokens (int, optional): Total number of tokens to yield
+                before ending iteration. Defaults to 1_000_000_000.
+            num_workers (int, optional): Number of worker threads for
+                DataLoader. Defaults to 4.
+            shuffle (bool, optional): Whether to shuffle the dataset.
+                Defaults to True.
         """
         first_example = dataset[0]["activations"]
         self.d_spatial = first_example.shape[0]
@@ -230,7 +234,7 @@ class ActivationsDataLoader:
         self.loader = DataLoader(
             dataset,
             batch_size=examples_per_batch,
-            shuffle=True,
+            shuffle=shuffle,
             num_workers=num_workers,
             pin_memory=torch.cuda.is_available(),
         )

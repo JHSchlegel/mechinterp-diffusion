@@ -6,6 +6,7 @@ Module for automated activation patching experiments on diffusion models.
 #                           Packages and Presets                              #
 # =========================================================================== #
 
+import json
 import logging
 import sys
 from dataclasses import dataclass, field
@@ -31,51 +32,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+DTYPE_MAP = {
+    "float16": torch.float16,
+    "float32": torch.float32,
+}
+
 # =========================================================================== #
 #                          Predefined Prompt Pairs                            #
 # =========================================================================== #
 
 PROMPT_PAIRS = [
-    {
-        "source": "A headshot photo of a woman",
-        "control": "A headshot photo of a man",
-    },
-    {
-        "source": "A headshot photo of a man",
-        "control": "A headshot photo of a woman",
-    },
-    {
-        "source": "A close-up photo of a cat",
-        "control": "A close-up photo of a bird",
-    },
-    {
-        "source": "A photo-realistic image of a bird",
-        "control": "A photo-realistic image of a cat",
-    },
-    {
-        "source": "An oil-painting of a bird",
-        "control": "A photo realistic image of a bird",
-    },
-    {
-        "source": "An oil-painting of a cat",
-        "control": "A photo realistic image of a cat",
-    },
     # {
-    #     "source": "A close-up photo of a red rose.",
-    #     "control": "A close-up photo of a yellow sunflower.",
+    #     "source": "A headshot photo of a woman",
+    #     "control": "A headshot photo of a man",
     # },
     # {
-    #     "source": "A fantasy portrait of a knight in shining armor.",
-    #     "control": "A fantasy portrait of a robot with glowing circuits.",
+    #     "source": "A headshot photo of a man",
+    #     "control": "A headshot photo of a woman",
     # },
     # {
-    #     "source": "A majestic lion resting on savanna grass.",
-    #     "control": "A majestic tiger resting on savanna grass.",
+    #     "source": "A high-resolution photo of a rose",
+    #     "control": "A high-resolution photo of a dog",
     # },
-    # {
-    #     "source": "A vintage steam train in countryside.",
-    #     "control": "A sleek modern jet in countryside.",
-    # },
+    {
+        "source": "A high-resolution photo of a cat.",
+        "control": "A high-resolution photo of a bird.",
+    },
+    {
+        "source": "A photo-realistic image of a bird.",
+        "control": "A photo-realistic image of a cat.",
+    },
+    {
+        "source": "A high-resolution photo of a dog.",
+        "control": "A high-resolution photo of a cat.",
+    },
+    {
+        "source": "A high-resolution photo of a dog.",
+        "control": "A high-resolution photo of a man.",
+    },
     {
         "source": "A crystal clear mountain lake.",
         "control": "A crystal clear ocean bay.",
@@ -83,6 +78,10 @@ PROMPT_PAIRS = [
     {
         "source": "A gothic cathedral with tall spires.",
         "control": "A modern skyscraper with glass facade.",
+    },
+    {
+        "source": " An ancient, gnarled oak tree in a forest.",
+        "control": " A tall, slender palm tree on a tropical beach.",
     },
 ]
 
@@ -101,16 +100,21 @@ class ActivationPatchingConfig(Serializable):
     model_id: str = "stabilityai/stable-diffusion-2-1"
     """Hugging Face model identifier for the diffusion model."""
 
-    sae_path: str = (
-        "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250815_090358/step_488282"  # noqa: E501
+    sae_paths: List[str] = field(
+        default_factory=lambda: [
+            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
+            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
+        ]
     )
-    """Path to the trained TopKSAE model directory."""
+    """Paths to the trained TopKSAE model directories."""
 
-    hook_name: str = (
-        # "unet.up_blocks.1.attentions.1"  #
-        "unet.down_blocks.2.attentions.0"
+    hook_names: List[str] = field(
+        default_factory=lambda: [
+            "unet.up_blocks.1.attentions.1",
+            "unet.down_blocks.2.attentions.0",
+        ]
     )
-    """Name of the model component to hook for activation patching."""
+    """Names of the model components to hook for activation patching."""
 
     torch_dtype: str = "float16"
     """Torch data type for models ('float16' or 'float32')."""
@@ -186,37 +190,47 @@ def main():
     logger.info(f"Running experiments with k values: {config.k_values}")
     logger.info(f"Patching timesteps: {config.patching_timestep_indices}")
 
-    dtype = torch.float16 if config.torch_dtype == "float16" else torch.float32
+    dtype = DTYPE_MAP.get(config.torch_dtype, torch.float32)
 
     pipe = HookedStableDiffusionPipeline.from_pretrained(
         config.model_id, torch_dtype=dtype, safety_checker=None
     ).to(config.device)
 
-    sae = TopKSAE.load_from_disk(
-        config.sae_path, config_class=TopKSAEConfig, device=config.device
-    ).to(dtype=dtype)
-    sae.eval()
+    # Process each SAE/hook pair separately
+    for sae_path, hook_name in zip(
+        config.sae_paths, config.hook_names, strict=False
+    ):
+        logger.info(f"{'='*80}")
+        logger.info(f"Processing SAE: {sae_path}")
+        logger.info(f"Hook: {hook_name}")
+        logger.info(f"{'='*80}")
 
-    for pair_idx in range(len(PROMPT_PAIRS)):
-        prompt_pair = PROMPT_PAIRS[pair_idx]
-        source_prompt = prompt_pair["source"]
-        control_prompt = prompt_pair["control"]
+        sae = TopKSAE.load_from_disk(
+            sae_path, config_class=TopKSAEConfig, device=config.device
+        ).to(dtype=dtype)
+        sae.eval()
 
-        logger.info(f"{'-'*80}")
-        logger.info(f"Prompt Pair {pair_idx + 1}/{len(PROMPT_PAIRS)}")
-        logger.info(f"Source: {source_prompt[:50]}...")
-        logger.info(f"Control: {control_prompt[:50]}...")
-        logger.info(f"{'-'*80}")
+        for pair_idx in range(len(PROMPT_PAIRS)):
+            prompt_pair = PROMPT_PAIRS[pair_idx]
+            source_prompt = prompt_pair["source"]
+            control_prompt = prompt_pair["control"]
 
-        run_experiment_with_k_grid(
-            source_prompt,
-            control_prompt,
-            config,
-            pipe,
-            sae,
-            height=config.height,
-            width=config.width,
-        )
+            logger.info(f"{'-'*80}")
+            logger.info(f"Prompt Pair {pair_idx + 1}/{len(PROMPT_PAIRS)}")
+            logger.info(f"Source: {source_prompt[:50]}...")
+            logger.info(f"Control: {control_prompt[:50]}...")
+            logger.info(f"{'-'*80}")
+
+            run_experiment_with_k_grid(
+                source_prompt,
+                control_prompt,
+                config,
+                pipe,
+                sae,
+                hook_name,
+                height=config.height,
+                width=config.width,
+            )
 
     logger.info("All experiments complete!")
 
@@ -234,6 +248,7 @@ def find_top_k_features(
     timestep_indices: List[int],
     k: int,
     config: ActivationPatchingConfig,
+    hook_name: str,
     height: int = 512,
     width: int = 512,
 ) -> List[int]:
@@ -273,7 +288,7 @@ def find_top_k_features(
         # Run inference and cache activations
         _, cache = pipe.run_with_cache(
             prompt=prompt,
-            positions_to_cache=[config.hook_name],
+            positions_to_cache=[hook_name],
             num_inference_steps=config.num_inference_steps,
             guidance_scale=config.guidance_scale,
             generator=generator,
@@ -285,10 +300,10 @@ def find_top_k_features(
 
         with torch.no_grad():
             all_feature_acts = []
-            for t_idx in timestep_indices:
+            for t_idx in range(config.num_inference_steps):
                 # Extract cached activations
-                input_cached = cache["input"][config.hook_name][:, t_idx]
-                output_cached = cache["output"][config.hook_name][:, t_idx]
+                input_cached = cache["input"][hook_name][:, t_idx]
+                output_cached = cache["output"][hook_name][:, t_idx]
 
                 # Compute residual stream
                 diff = (output_cached - input_cached).to(config.device)
@@ -328,6 +343,7 @@ def extract_source_patch_vectors(
     causal_feature_indices: List[int],
     timestep_indices: List[int],
     config: ActivationPatchingConfig,
+    hook_name: str,
     height: int = 512,
     width: int = 512,
 ) -> Tuple[Dict[int, torch.Tensor], List[Image.Image]]:
@@ -353,7 +369,7 @@ def extract_source_patch_vectors(
     generator = torch.Generator(config.device).manual_seed(config.seed)
     source_img, source_cache = pipe.run_with_cache(
         prompt=source_prompt,
-        positions_to_cache=[config.hook_name],
+        positions_to_cache=[hook_name],
         num_inference_steps=config.num_inference_steps,
         guidance_scale=config.guidance_scale,
         generator=generator,
@@ -366,12 +382,8 @@ def extract_source_patch_vectors(
     source_patch_vectors = {}
     with torch.no_grad():
         for t_idx in timestep_indices:
-            source_input_cached = source_cache["input"][config.hook_name][
-                :, t_idx
-            ]
-            source_output_cached = source_cache["output"][config.hook_name][
-                :, t_idx
-            ]
+            source_input_cached = source_cache["input"][hook_name][:, t_idx]
+            source_output_cached = source_cache["output"][hook_name][:, t_idx]
             source_diff = (source_output_cached - source_input_cached).to(
                 config.device
             )
@@ -506,6 +518,7 @@ def run_experiment_with_k_grid(
     config: ActivationPatchingConfig,
     pipe: HookedStableDiffusionPipeline,
     sae: TopKSAE,
+    hook_name: str,
     height: int = 512,
     width: int = 512,
 ) -> Path:
@@ -524,7 +537,7 @@ def run_experiment_with_k_grid(
     """
     set_all_seeds(config.seed)
 
-    block_name = config.hook_name.replace("unet.", "").replace(".", "_")
+    block_name = hook_name.replace("unet.", "").replace(".", "_")
 
     words = (
         source_prompt.lower().replace(",", "").replace(".", "").split()[:10]
@@ -549,6 +562,10 @@ def run_experiment_with_k_grid(
         / f"{timestamp}"
     )
     base_save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save config:
+    with open(base_save_dir / "config.json", "w") as f:
+        json.dump(config.to_dict(), f, indent=4)
 
     # Generate source image once
     generator = torch.Generator(config.device).manual_seed(config.seed)
@@ -594,6 +611,7 @@ def run_experiment_with_k_grid(
         config.patching_timestep_indices,
         max_k,
         config,
+        hook_name,
         height=height,
         width=width,
     )
@@ -612,6 +630,7 @@ def run_experiment_with_k_grid(
             causal_feature_indices,
             config.patching_timestep_indices,
             config,
+            hook_name,
             height=height,
             width=width,
         )
@@ -630,7 +649,7 @@ def run_experiment_with_k_grid(
         generator = torch.Generator(config.device).manual_seed(config.seed)
         patched_images = pipe.run_with_hooks(
             prompt=control_prompt,
-            position_hook_dict={config.hook_name: hook_fn},
+            position_hook_dict={hook_name: hook_fn},
             num_inference_steps=config.num_inference_steps,
             guidance_scale=config.guidance_scale,
             generator=generator,
@@ -684,18 +703,18 @@ def create_paper_figure(
 
     # Control image on the left
     axes[0].imshow(results["control_img"])
-    axes[0].set_title("Control", fontsize=12, fontweight="bold")
+    axes[0].set_title("Control", fontsize=28, fontweight="bold")
     axes[0].axis("off")
 
     # K variations in the middle (lowest to highest)
     for i, k in enumerate(sorted_k, 1):
         axes[i].imshow(results["k_results"][k])
-        axes[i].set_title(f"{k} Features", fontsize=12, fontweight="bold")
+        axes[i].set_title(f"{k} Features", fontsize=28, fontweight="bold")
         axes[i].axis("off")
 
     # Source image on the right
     axes[-1].imshow(results["source_img"])
-    axes[-1].set_title("Source", fontsize=12, fontweight="bold")
+    axes[-1].set_title("Source", fontsize=28, fontweight="bold")
     axes[-1].axis("off")
 
     # Adjust layout and save

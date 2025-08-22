@@ -251,10 +251,6 @@ class TopExamplesExtractor:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute feature activation strength across timesteps.
 
-        Implements the formula:
-        A_t^r = (1/wh) * sum(i=1 to h)sum(j=1 to w) S_ij,t^r
-        A^r = max_t(A_t^r)
-
         Args:
             feature_maps (torch.Tensor): Feature maps of shape
                 [bs, timesteps, spatial, d_sae].
@@ -667,7 +663,7 @@ class TopExamplesExtractor:
         jet = plt.cm.jet
         cmap = jet(np.arange(jet.N))
         cmap[:1, -1] = 0  # Make lowest values transparent
-        cmap[1:, -1] = 0.4  # Set alpha for rest of heatmap
+        cmap[1:, -1] = 0.3  # Set alpha for rest of heatmap
         custom_cmap = ListedColormap(cmap)
 
         heatmap_colored = custom_cmap(upsampled_map)

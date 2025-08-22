@@ -183,6 +183,12 @@ def add_feature_hook(
         Tuple[Tensor]: Modified output using SAE reconstruction
     """
     diff = (output[0] - input[0]).permute((0, 2, 3, 1)).to(sae.device)
+    bs, h, w, c = diff.shape
+    if bs == 2:
+        # extract conditional part
+        _, diff = diff.chunk(2)
+
+    diff = diff.reshape(-1, c)
     sae_input, info = sae.preprocess_input(diff)
     activations: Tensor = F.relu(sae.encode(sae_input))
     mask = torch.zeros_like(activations, device=diff.device)
@@ -190,18 +196,19 @@ def add_feature_hook(
     to_add = sae.postprocess_output(mask @ sae.W_dec.weight.T, info)
 
     output_tensor = output[0]
+    to_add = to_add.reshape(-1, h, w, c)
     to_add_permuted = to_add.permute(0, 3, 1, 2).to(output_tensor.device)
 
-    if output_tensor.shape[0] % 2 == 0:
-        num_prompts = output_tensor.shape[0] // 2
-
+    if bs == 2:
         # Create a multiplier: -1 for unconditional, +1 for conditional
         # see: https://arxiv.org/pdf/2410.22366
-        multiplier = (
-            torch.cat([-torch.ones(num_prompts), torch.ones(num_prompts)])
-            .to(output_tensor.device)
-            .view(-1, 1, 1, 1)
+        uncond = -torch.ones(
+            1, device=output_tensor.device, dtype=output_tensor.dtype
         )
+        cond = torch.ones(
+            1, device=output_tensor.device, dtype=output_tensor.dtype
+        )
+        multiplier = torch.cat([uncond, cond]).view(-1, 1, 1, 1)
 
         modified_output = output_tensor + to_add_permuted * multiplier
         return (modified_output,)
@@ -236,27 +243,36 @@ def scale_feature_hook(
         Tuple[Tensor]: Modified output using SAE reconstruction
     """
     diff = (output[0] - input[0]).permute((0, 2, 3, 1)).to(sae.device)
+    bs, h, w, c = diff.shape
+    if bs == 2:
+        # extract conditional part
+        _, diff = diff.chunk(2)
+
+    diff = diff.reshape(-1, c)
+
     sae_input, info = sae.preprocess_input(diff)
     activations: Tensor = F.relu(sae.encode(sae_input))
     top_acts, _ = sae._get_topk(activations, k=sae.cfg.k)
     original_activations: Tensor = top_acts[..., feature_idx].clone()
     mask: Tensor = torch.zeros_like(top_acts, device=diff.device)
-    mask[..., feature_idx] = (beta - 1.0) * original_activations.squeeze(-1)
+    mask[..., feature_idx] = beta * original_activations.squeeze(-1)
     to_add: Tensor = sae.postprocess_output(mask @ sae.W_dec.weight.T, info)
+    to_add = to_add.reshape(-1, h, w, c)
 
     output_tensor = output[0]
     to_add_permuted = to_add.permute(0, 3, 1, 2).to(output_tensor.device)
 
     # Check if classifier-free guidance is enabled.
-    if output_tensor.shape[0] % 2 == 0:
-        num_prompts = output_tensor.shape[0] // 2
+    if bs == 2:
         # Create a multiplier: -1 for unconditional, +1 for conditional
         # see: https://arxiv.org/pdf/2410.22366
-        multiplier = (
-            torch.cat([-torch.ones(num_prompts), torch.ones(num_prompts)])
-            .to(output_tensor.device)
-            .view(-1, 1, 1, 1)
+        uncond = -torch.ones(
+            1, device=output_tensor.device, dtype=output_tensor.dtype
         )
+        cond = torch.ones(
+            1, device=output_tensor.device, dtype=output_tensor.dtype
+        )
+        multiplier = torch.cat([uncond, cond]).view(-1, 1, 1, 1)
         modified_output = output_tensor + to_add_permuted * multiplier
         return (modified_output,)
     else:
@@ -281,10 +297,14 @@ def reconstruct_sae_hook(
     Returns:
         Tuple[Tensor]: Modified output using SAE reconstruction
     """
+
     diff: Tensor = (output[0] - input[0]).permute((0, 2, 3, 1)).to(sae.device)
+    bs, h, w, c = diff.shape
+    diff = diff.reshape(-1, c)
     sae_input, info = sae.preprocess_input(diff)
     activations: Tensor = F.relu(sae.encode(sae_input))
     top_acts, _ = sae._get_topk(activations, k=sae.cfg.k)
     reconstructed: Tensor = sae.decode(top_acts)
     sae_output: Tensor = sae.postprocess_output(reconstructed, info)
+    sae_output = sae_output.reshape(-1, h, w, c)
     return (input[0] + sae_output.permute(0, 3, 1, 2).to(output[0].device),)

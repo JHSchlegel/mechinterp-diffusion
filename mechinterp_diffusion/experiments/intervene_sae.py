@@ -1,12 +1,36 @@
 """
-This module implements SAE-based interventions for diffusion models. It allows
-for different types of interventions (add, scale, reconstruct) on specific
-features of the SAE model during specific timesteps of the diffusion process.
+This module implements SAE-based interventions for diffusion models. It
+provides three different intervention modes with multiple hook types.
 
+
+INTERVENTION MODES:
+1. Grid Mode (--intervention_mode grid):
+   Creates a grid visualization comparing multiple features and intervention
+    values.
+
+2. Trajectory Mode (--intervention_mode trajectory):
+   Analyzes the diffusion process over time, capturing intermediate steps.
+   Shows how interventions affect the generation trajectory with optional
+   feature activation heatmaps.
+
+3. TopK Trace Mode (--intervention_mode topk_trace):
+   Performs cascade analysis by identifying the most active feature at a
+   specific timestep and analyzing the downstream effects when that feature
+   is knocked out.
+
+HOOK TYPES:
+- add: Adds a constant value to specific SAE feature activations
+- scale: Multiplies specific SAE feature activations by a scaling factor
+- reconstruct: Replaces module outputs with SAE reconstructions
+
+TEMPORAL CONTROL:
+- --timesteps: Apply intervention at specific timesteps
+- --timestep_values: Apply different intervention values at different timesteps
 
 Example usage:
-python intervene_sae.py --hook_type add --feature_idx 1674 --value 5.0
-python intervene_sae.py --hoook_type scale --feature_idx 1674 --value 5.0
+python intervene_sae.py --intervention_mode grid --hook_type add
+python intervene_sae.py --intervention_mode trajectory --hook_type scale
+python intervene_sae.py --intervention_mode topk_trace --hook_type scale
 """
 
 # =========================================================================== #
@@ -92,13 +116,6 @@ class SAEInterventionManager:
             "'add', 'scale', or 'reconstruct'."
         )
 
-        assert self.config.hook_type != "reconstruct" or not (
-            self.timesteps or self.timestep_values
-        ), (
-            "Reconstruction hooks do not support timesteps or timestep values."
-            " Please set `timesteps` and `timestep_values` to None."
-        )
-
         assert self.config.intervention_mode in [
             "grid",
             "trajectory",
@@ -110,8 +127,6 @@ class SAEInterventionManager:
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.torch_dtype = DTYPE_MAP.get(config.torch_dtype, torch.float32)
-        self.sae_type = config.sae_path.split("_")[0].split("/")[-1]
-        logging.info(f"SAE type: {self.sae_type}")
 
         self.sae_model = TopKSAE.load_from_disk(
             self.config.sae_path,
@@ -123,18 +138,13 @@ class SAEInterventionManager:
             self.config.model_id,
             torch_dtype=self.torch_dtype,
             safety_checker=None,
-        ).to(self.device)
+        ).to(self.device, self.torch_dtype)
 
         self.pipe.scheduler.set_timesteps(
             self.config.num_inference_steps, device="cpu"
         )
-        self.scheduler_timesteps = self.pipe.scheduler.timesteps.to(
-            self.device
-        )
 
-        self.scheduler_timesteps = self.pipe.scheduler.timesteps.to(
-            self.device
-        )
+        self.scheduler_timesteps = self.pipe.scheduler.timesteps.to("cpu")
 
         self.timesteps = self.config.timesteps
         self.timestep_values = self.config.timestep_values
@@ -178,6 +188,7 @@ class SAEInterventionManager:
         self.save_dir = os.path.join(
             self.config.output_dir,
             f"{prefix}_hook-{self.config.hook_type}_type-{intervention_times}_{now}",  # noqa: E501
+            self.config.target_module,
         )
 
         os.makedirs(self.save_dir, exist_ok=True)
@@ -212,6 +223,8 @@ class SAEInterventionManager:
         if not self.config.prompts:
             dataset = load_from_disk(self.config.dataset_path)
             dataset_split = dataset[self.config.dataset_split]
+            # shuffle huggingface dataset:
+            dataset_split = dataset_split.shuffle(seed=self.config.seed)
             logger.info(f"Loaded dataset with {len(dataset_split)} examples")
             for i in range(min(self.config.num_prompts, len(dataset_split))):
                 prompt_entry = dataset_split[i]
@@ -340,6 +353,7 @@ class SAEInterventionManager:
                 height=self.config.height,
                 width=self.config.width,
             )
+
             final_image = output.images[0]
 
             # Reset the generator to get the same result
@@ -396,7 +410,7 @@ class SAEInterventionManager:
         """
         module = self._locate_module(target_module)
         feature_maps = {}
-        current_step = [0]
+        current_step = [0]  # Use a list to allow mutation in the hook
 
         # Hook to capture feature activations
         def feature_hook(module, input, output):
@@ -526,7 +540,6 @@ class SAEInterventionManager:
                         original_images=[original_image],
                         intervened_images=[intervened_image],
                         save_path=compare_path,
-                        prompts=[prompt],
                     )
                     logger.info(
                         f"Saved comparison for feature {feature_idx}, "
@@ -643,8 +656,6 @@ class SAEInterventionManager:
                     original_images=[original_final],
                     intervened_images=[intervened_final],
                     save_path=os.path.join(prompt_dir, "comparison.png"),
-                    prompts=[prompt],
-                    timesteps=self.timesteps,
                 )
                 logger.info(
                     f"Saved final comparison to "
@@ -691,7 +702,6 @@ class SAEInterventionManager:
             feature_maps=feature_maps,
             images=original_images,
             save_path=os.path.join(output_dir, "feature_maps_over_time.png"),
-            feature_idx=self.config.features[0],
             timesteps=capture_steps,
         )
 
@@ -700,57 +710,55 @@ class SAEInterventionManager:
         original_images: List[Image.Image],
         intervened_images: List[Image.Image],
         save_path: str,
-        prompts: List[str],
-        timesteps: Optional[List[int]] = None,
     ) -> None:
-        """Visualize the results of intervention compared to original images.
-
-        Args:
-            original_images (List[Images.Image]): Original generated images.
-            intervened_images (List[Image.Image]): Images generated with
-                intervention
-            save_path (str): Path to save visualization to.
-            prompts (List[str]): Prompts used to generate images.
-            timesteps (Optional[List[int]]): Timesteps at which intervention
-                was applied.
+        """
+        Visualize a comparison, precisely styled to match the grid plot.
         """
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-        axes = axes.reshape(1, -1)
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
-        ## Original image:
-        orig_img = original_images[0]
-        orig_array = np.array(orig_img)
+        title_font_properties = {
+            "fontsize": 28,
+            "fontweight": "bold",
+            "pad": 10,
+        }
 
-        axes[0, 0].imshow(orig_array)
-        axes[0, 0].set_title("Original")
-        axes[0, 0].axis("off")
+        # Plot Original Image
+        axes[0].imshow(np.array(original_images[0]))
+        axes[0].set_title("Original", **title_font_properties)
+        axes[0].axis("off")
 
-        ## Intervened image:
-        interv_img = intervened_images[0]
-        interv_array = np.array(interv_img)
+        # Plot Intervened/Reconstructed Image
+        title = (
+            "Reconstruction"
+            if self.config.hook_type == "reconstruct"
+            else "Intervened"
+        )
+        interv_array = np.array(intervened_images[0])
+        axes[1].imshow(interv_array)
+        axes[1].set_title(title, **title_font_properties)
+        axes[1].axis("off")
 
-        axes[0, 1].imshow(interv_array)
-        axes[0, 1].set_title("Intervened")
-        axes[0, 1].axis("off")
-
-        # Calculate and plot absolute difference
-        orig_array = orig_array.astype(np.float32)
+        # Plot Difference Map
+        orig_array = np.array(original_images[0]).astype(np.float32)
         interv_array = interv_array.astype(np.float32)
-
         diff = np.abs(orig_array - interv_array)
         diff_max = diff.max()
         if diff_max > 0:
-            diff = diff / diff_max
+            diff /= diff_max
+        axes[2].imshow(diff, cmap="viridis")
+        axes[2].set_title("Difference", **title_font_properties)
+        axes[2].axis("off")
 
-        axes[0, 2].imshow(diff, cmap="viridis")
-        axes[0, 2].set_title("Difference")
-        axes[0, 2].axis("off")
+        plt.subplots_adjust(
+            left=0.05, right=0.95, top=0.9, bottom=0.05, wspace=0.15
+        )
 
-        plt.subplots_adjust(top=0.95)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
+
+        logger.info(f"Saved styled comparison to {save_path}")
 
     def _visualize_intermediate_results(
         self,
@@ -777,36 +785,36 @@ class SAEInterventionManager:
         fig, axes = plt.subplots(3, n_steps, figsize=(n_steps * 4, 12))
         axes[0, 0].set_ylabel(
             "Original",
-            fontsize=14,
+            fontsize=28,
             fontweight="bold",
             rotation=0,
-            labelpad=60,
+            labelpad=120,
             verticalalignment="center",
         )
         if hasattr(self, "config") and self.config.hook_type == "reconstruct":
             axes[1, 0].set_ylabel(
                 "Reconstruction",
-                ffontsize=14,
+                fontsize=28,
                 fontweight="bold",
                 rotation=0,
-                labelpad=60,
+                labelpad=120,
                 verticalalignment="center",
             )
         else:
             axes[1, 0].set_ylabel(
                 "Intervened",
-                fontsize=14,
+                fontsize=28,
                 fontweight="bold",
                 rotation=0,
-                labelpad=60,
+                labelpad=120,
                 verticalalignment="center",
             )
         axes[2, 0].set_ylabel(
             "Difference",
-            fontsize=14,
+            fontsize=28,
             fontweight="bold",
             rotation=0,
-            labelpad=60,
+            labelpad=120,
             verticalalignment="center",
         )
 
@@ -874,7 +882,6 @@ class SAEInterventionManager:
         feature_maps: List[torch.Tensor],
         images: List[Image.Image],
         save_path: str,
-        feature_idx: int,
         timesteps: Optional[List[int]] = None,
     ) -> None:
         """Visualize feature activation maps across different timesteps.
@@ -926,7 +933,8 @@ class SAEInterventionManager:
         """
         Create a heatmap overlay on the original image to visualize feature
         activations. Based on the implementation in sdxl-unbox, see:
-        https://github.com/surkovv/sdxl-unbox/blob/d5e383fea440aed59d533062f3d8f8435c9a3737/app.py
+        https://github.com/surkovv/sdxl-unbox/blob/
+        d5e383fea440aed59d533062f3d8f8435c9a3737/app.py
 
         Args:
             original_image (Union[Tensor, np.ndarray]): Original image to
@@ -995,15 +1003,19 @@ class SAEInterventionManager:
 
         # Column titles
         for j, val in enumerate(intervention_values):
-            title_text = str(val) if isinstance(val, str) else f"β={val:.2f}"
+            title_text = str(val) if isinstance(val, str) else f"ξ={val:.2f}"
             axes[0, j].set_title(
-                title_text, pad=10, fontsize=14, fontweight="bold"
+                title_text, pad=10, fontsize=28, fontweight="bold"
             )
 
         # Feature/row labels
         for i, feat in enumerate(feature_indices):
             axes[i, 0].set_ylabel(
-                f"Feature {feat}", fontsize=14, fontweight="bold", labelpad=20
+                f"Feature {feat}",
+                fontsize=28,
+                fontweight="bold",
+                labelpad=120,
+                rotation=0,
             )
 
         for i in range(n_rows):
@@ -1067,13 +1079,13 @@ class SAEInterventionManager:
                 str(val) if isinstance(val, str) else f"Value: {val:.2f}"
             )
             axes_diff[0, j].set_title(
-                title_text, pad=10, fontsize=14, fontweight="bold"
+                title_text, pad=10, fontsize=28, fontweight="bold"
             )
 
         # Feature/row labels
         for i, feat in enumerate(feature_indices):
             axes_diff[i, 0].set_ylabel(
-                f"Feature {feat}", labelpad=20, fontsize=14, fontweight="bold"
+                f"Feature {feat}", labelpad=20, fontsize=28, fontweight="bold"
             )
 
         for i in range(n_rows):
@@ -1112,12 +1124,405 @@ class SAEInterventionManager:
     def run_topk_trace_mode(self, prompts: List[str]) -> None:
         """
         Run top-k feature tracing mode to analyze which features are most
-        active at each timestep.
+        active at each timestep, and see what happens to features when we
+        intervene on the top feature at a specific timestep.
 
         Args:
             prompts (List[str]): List of prompts to analyze
         """
-        pass
+        knockout_timestep = self.config.timesteps[0]
+
+        logger.info(
+            f"Running top-k trace (knockout cascade analysis) for "
+            f"feature at t={knockout_timestep}."
+        )
+
+        for prompt_idx, prompt in enumerate(prompts):
+            prompt_name = (
+                prompt[:80]
+                .replace(" ", "_")
+                .replace(",", "_")
+                .replace(".", "_")
+            )
+            prompt_dir = os.path.join(
+                self.save_dir,
+                f"{prompt_idx}_{prompt_name}_knockout_t_{knockout_timestep}",
+            )
+            os.makedirs(prompt_dir, exist_ok=True)
+            with open(os.path.join(prompt_dir, "prompt.txt"), "w") as f:
+                f.write(prompt)
+
+            logger.info("Performing baseline top-k trace:")
+            generator = torch.Generator(self.device).manual_seed(
+                self.config.seed
+            )
+            img_orig, data_orig = self._capture_topk_over_time(
+                prompt=prompt,
+                k=self.config.topk_trace_k,
+                generator=generator,
+            )
+            img_orig.save(os.path.join(prompt_dir, "original_image.png"))
+
+            activations_at_knockout = data_orig["activations"][
+                knockout_timestep
+            ]
+            feat_to_knockout = np.argmax(activations_at_knockout).item()
+            logger.info(
+                f"Top feature at t={knockout_timestep} is #{feat_to_knockout}"
+                f"Preparing knockout run."
+            )
+
+            final_prompt_dir = f"{prompt_dir}_feat_{feat_to_knockout}"
+            os.rename(prompt_dir, final_prompt_dir)
+            prompt_dir = final_prompt_dir
+
+            logger.info(
+                f"Performing intervention run with feature {feat_to_knockout} "
+                f"knocked out at t={knockout_timestep}."
+            )
+            hook_handle = self._register_sae_hook(
+                target_module=self.config.target_module,
+                feature_idx=feat_to_knockout,
+                value=self.config.intervention_values[0],
+                hook_type="scale",
+                timesteps=[knockout_timestep],
+            )
+
+            generator = torch.Generator(self.device).manual_seed(
+                self.config.seed
+            )
+            img_int, data_int = self._capture_topk_over_time(
+                prompt=prompt,
+                k=self.config.topk_trace_k,
+                generator=generator,
+            )
+            hook_handle.remove()
+            img_int.save(os.path.join(prompt_dir, "intervened_image.png"))
+
+            # -----------------------------------------------------------------
+            # Final Image Comparison
+            # -----------------------------------------------------------------
+            self._visualize_results(
+                original_images=[img_orig],
+                intervened_images=[img_int],
+                save_path=os.path.join(prompt_dir, "comparison.png"),
+            )
+
+            self._visualize_cascade_effect(
+                data_orig=data_orig,
+                data_int=data_int,
+                img_orig=img_orig,
+                img_int=img_int,
+                prompt=prompt,
+                feat_to_knockout=feat_to_knockout,
+                knockout_timestep=knockout_timestep,
+                output_dir=prompt_dir,
+            )
+
+    def _capture_topk_over_time(
+        self,
+        prompt: str,
+        k: int,
+        generator: torch.Generator,
+    ) -> Tuple[Image.Image, Dict[str, Any]]:
+        """
+        Capture the activations at each timestep during a single generation
+        run.
+
+        Args:
+            prompt (str): Prompt for image generation.
+            k (int): Number of top features to track.
+            generator (torch.Generator): Random generator for reproducibility.
+
+        Returns:
+            Tuple[Image.Image, Dict[str, Any]]: A tuple containing:
+                - The final generated image.
+                - A dictionary with feature data over time.
+        """
+        module = self._locate_module(self.config.target_module)
+
+        topk_features_by_timestep = []
+        activations_by_timestep = []
+        current_step = [0]
+
+        def capture_hook(module, input, output):
+            diff = (
+                (output[0] - input[0])
+                .permute((0, 2, 3, 1))
+                .to(self.sae_model.device)
+            )
+
+            # ! only use conditional term to quantify importance of feature
+            if self.config.guidance_scale > 1.0 and diff.shape[0] == 2:
+                diff = diff[1]
+
+            h, w, channels = diff.shape
+            diff, _ = self.sae_model.preprocess_input(diff.view(-1, channels))
+            activations = F.relu(self.sae_model.encode(diff))
+            top_acts, _ = self.sae_model._get_topk(
+                activations, k=self.sae_model.cfg.k
+            )
+
+            spatial_mean_activations = top_acts.mean(dim=0)
+
+            _, topk_indices = torch.topk(spatial_mean_activations, k, dim=0)
+
+            topk_features_by_timestep.append(
+                topk_indices.detach().cpu().numpy()
+            )
+            activations_by_timestep.append(
+                spatial_mean_activations.detach().cpu().numpy()
+            )
+            current_step[0] += 1
+            return output
+
+        handle = module.register_forward_hook(capture_hook)
+
+        with torch.no_grad():
+            output = self.pipe(
+                prompt=prompt,
+                num_inference_steps=self.config.num_inference_steps,
+                guidance_scale=self.config.guidance_scale,
+                generator=generator,
+                output_type="pil",
+                height=self.config.height,
+                width=self.config.width,
+            )
+            image = output.images[0]
+
+        handle.remove()
+
+        num_steps = self.config.num_inference_steps
+        data = {
+            "timesteps": np.arange(num_steps),
+            "activations": activations_by_timestep,
+        }
+        return image, data
+
+    def _visualize_cascade_effect(
+        self,
+        data_orig: Dict[str, Any],
+        data_int: Dict[str, Any],
+        img_orig: Image.Image,
+        img_int: Image.Image,
+        prompt: str,
+        feat_to_knockout: int,
+        knockout_timestep: int,
+        output_dir: str,
+    ) -> None:
+        """
+        Visualize the cascade effect of a feature knockout from multiple angles
+
+        Args:
+            data_orig (Dict[str, Any]): Data from the original run.
+            data_int (Dict[str, Any]): Data from the intervened run.
+            img_orig (Image.Image): Original image.
+            img_int (Image.Image): Intervened image.
+            prompt (str): The prompt used for generation.
+            feat_to_knockout (int): Feature index that was knocked out.
+            knockout_timestep (int): Timestep at which the feature was knocked
+                out.
+            output_dir (str): Directory to save the visualizations.
+        """
+        logger.info(
+            f"Generating cascade effect visualizations in {output_dir}"
+        )
+
+        info_path = os.path.join(output_dir, "knockout_info.txt")
+        with open(info_path, "w") as f:
+            f.write(f"Prompt: {prompt}\n")
+            f.write(f"Knockout Timestep (raw): {knockout_timestep}\n")
+            diffusion_time = self._convert_timestep_to_diffusion_time(
+                self.scheduler_timesteps[knockout_timestep]
+            )
+            f.write(
+                f"Knockout Timestep (diffusion time): {diffusion_time:.4f}\n"
+            )
+            f.write(f"Knocked-out Feature ID: {feat_to_knockout}\n")
+
+        num_steps = len(data_orig["timesteps"])
+        activations_orig = np.stack(data_orig["activations"])
+        activations_int = np.stack(data_int["activations"])
+        analysis_range = range(knockout_timestep + 1, num_steps)
+
+        if not analysis_range:
+            logger.warning(
+                "No timesteps available for analysis after knockout. Skipping cascade plots."  # noqa: E501
+            )
+            return
+
+        analysis_diffusion_times = [
+            self._convert_timestep_to_diffusion_time(
+                self.scheduler_timesteps[t]
+            )
+            for t in analysis_range
+        ]
+
+        cosine_sims, l2_distances = [], []
+        for t in analysis_range:
+            vec_orig = activations_orig[t]
+            vec_int = activations_int[t]
+            dot_product = np.dot(vec_orig, vec_int)
+            norm_prod = np.linalg.norm(vec_orig) * np.linalg.norm(vec_int)
+            cosine_sims.append(dot_product / norm_prod if norm_prod > 0 else 0)
+            l2_distances.append(np.linalg.norm(vec_orig - vec_int))
+
+        fig_cos, ax_cos = plt.subplots(figsize=(10, 6))
+        ax_cos.plot(
+            analysis_diffusion_times,
+            cosine_sims,
+            "o-",
+            color="midnightblue",
+            markersize=6,
+            linewidth=2,
+        )
+        ax_cos.set_ylabel("Cosine Similarity", fontsize=16)
+        ax_cos.set_xlabel("Diffusion Time", fontsize=16)
+        ax_cos.tick_params(axis="both", which="major", labelsize=12)
+        ax_cos.grid(True, linestyle="--", alpha=0.6)
+        ax_cos.set_ylim(-1, 1)
+        fig_cos.tight_layout()
+        plt.savefig(
+            os.path.join(output_dir, "cosine_similarity.png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close(fig_cos)
+
+        fig_l2, ax_l2 = plt.subplots(figsize=(10, 6))
+        ax_l2.plot(
+            analysis_diffusion_times,
+            l2_distances,
+            "o-",
+            color="midnightblue",
+            markersize=6,
+            linewidth=2,
+        )
+        ax_l2.set_ylabel("L2 Distance", fontsize=16)
+        ax_l2.set_xlabel("Diffusion Time", fontsize=16)
+        ax_l2.tick_params(axis="both", which="major", labelsize=12)
+        ax_l2.grid(True, linestyle="--", alpha=0.6)
+        ax_l2.set_ylim(bottom=0)
+        fig_l2.tight_layout()
+        plt.savefig(
+            os.path.join(output_dir, "l2_distance.png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close(fig_l2)
+
+        delta_activations_by_time = []
+        timestep_labels = []
+        inactive_counts = []
+        total_counts = []
+        selected_indices = list(range(0, len(analysis_range), 4))
+        if (
+            len(analysis_range) > 0
+            and len(analysis_range) - 1 not in selected_indices
+        ):
+            selected_indices.append(len(analysis_range) - 1)
+
+        for idx in selected_indices:
+            t = list(analysis_range)[idx]
+            orig_t, int_t = activations_orig[t], activations_int[t]
+            delta_t = int_t - orig_t
+            delta_activations_by_time.append(delta_t)
+            timestep_labels.append(f"t={analysis_diffusion_times[idx]:.3f}")
+
+            active_mask = ~((np.abs(orig_t) < 1e-8) & (np.abs(int_t) < 1e-8))
+            n_total = len(delta_t)
+            n_inactive = n_total - np.sum(active_mask)
+            inactive_counts.append(n_inactive)
+            total_counts.append(n_total)
+
+        inactive_stats_path = os.path.join(
+            output_dir, "inactive_feature_stats.txt"
+        )
+        with open(inactive_stats_path, "w") as f:
+            f.write(
+                "Inactive Feature Statistics (zero before AND after intervention)\n"  # noqa: E501
+            )
+            f.write("=" * 60 + "\n")
+            f.write(
+                f"{'Timestep':<12} {'Total':<8} {'Inactive':<10} {'Active':<8} {'Inactive %':<12}\n"  # noqa: E501
+            )
+            f.write("-" * 60 + "\n")
+            for idx, (total, inactive) in enumerate(
+                zip(total_counts, inactive_counts, strict=False)
+            ):
+                active = total - inactive
+                inactive_pct = (inactive / total * 100) if total > 0 else 0
+                time_label = (
+                    f"t={analysis_diffusion_times[selected_indices[idx]]:.3f}"
+                )
+                f.write(
+                    f"{time_label:<12} {total:<8} {inactive:<10} {active:<8} {inactive_pct:<12.1f}\n"  # noqa: E501
+                )
+
+        delta_activations_by_time = delta_activations_by_time[::-1]
+        timestep_labels = timestep_labels[::-1]
+
+        fig_ridge, ax_ridge = plt.subplots(figsize=(8, 10))
+        colors = plt.cm.viridis(
+            np.linspace(0, 1, len(delta_activations_by_time))
+        )
+        all_deltas = np.concatenate(delta_activations_by_time)
+        x_min, x_max = np.percentile(all_deltas, [1, 99])
+
+        n_bins = 200
+
+        for i, (delta_t, label, color) in enumerate(
+            zip(
+                delta_activations_by_time,
+                timestep_labels,
+                colors,
+                strict=False,
+            )
+        ):
+            y_base = i
+            hist, bin_edges = np.histogram(
+                delta_t, bins=n_bins, range=(x_min, x_max), density=True
+            )
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            if hist.max() > 0:
+                hist = hist / hist.max() * 0.9
+            ax_ridge.bar(
+                bin_centers,
+                hist,
+                bottom=y_base,
+                width=(x_max - x_min) / n_bins,
+                color=color,
+                alpha=0.8,
+                edgecolor=color,
+            )
+            ax_ridge.text(
+                x_max,
+                y_base + 0.2,
+                label,
+                ha="left",
+                va="center",
+                fontsize=10,
+                weight="bold",
+            )
+
+        ax_ridge.axvline(
+            0, color="red", linestyle="--", linewidth=1.5, alpha=0.8
+        )
+        ax_ridge.set_xlim(x_min, x_max * 1.25)
+        ax_ridge.set_yticks([])
+        ax_ridge.spines[["left", "right", "top"]].set_visible(False)
+        ax_ridge.grid(True, axis="x", linestyle="--", alpha=0.5)
+        ax_ridge.set_xlabel("Change in Activation", fontsize=16)
+        ax_ridge.tick_params(axis="x", which="major", labelsize=12)
+        fig_ridge.tight_layout()
+        plt.savefig(
+            os.path.join(output_dir, "activation_ridges.png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close(fig_ridge)
+
+        plt.rcdefaults()
 
 
 if __name__ == "__main__":
