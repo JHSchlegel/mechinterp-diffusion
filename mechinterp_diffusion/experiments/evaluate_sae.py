@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from torchmetrics.image.fid import FrechetInceptionDistance
 from umap import UMAP
 
 matplotlib.use("Agg")
@@ -31,7 +32,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from datasets import load_from_disk
-from icecream import ic
 from simple_parsing import Serializable, parse
 from torch import Tensor
 from tqdm import tqdm
@@ -68,8 +68,8 @@ class SAEAssessmentConfig(Serializable):
     # SAE and model configuration
     sae_paths: List[str] = field(
         default_factory=lambda: [
-            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
+            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",
+            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",
         ]
     )
     """Paths to SAE model checkpoints"""
@@ -111,7 +111,7 @@ class SAEAssessmentConfig(Serializable):
     model_id: str = "stabilityai/stable-diffusion-2-1"
     """Hugging Face model ID"""
 
-    torch_dtype: str = "float16"
+    torch_dtype: str = "float32"
     """Torch data type (float16 or float32)"""
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -246,17 +246,39 @@ def main():
     for module in config.target_modules:
         module_data = results_df[results_df["target_module"] == module]
         logger.info(f"\n  {module}:")
-        logger.info(
-            f"    LPIPS: {module_data['reconstruction_lpips'].mean():.4f} "
-            f"± {module_data['reconstruction_lpips'].std():.4f}"
-        )
-        logger.info(
-            f"    R²: {module_data['reconstruction_r2'].mean():.4f} "
-            f"± {module_data['reconstruction_r2'].std():.4f}"
-        )
-        logger.info(
-            f"    Dead Features: {module_data['dead_features_pct'].mean():.2%}"
-        )
+
+        if config.mode == "reconstruction":
+            logger.info(
+                f"LPIPS: {module_data['reconstruction_lpips'].mean():.4f} "
+                f"± {module_data['reconstruction_lpips'].std():.4f}"
+            )
+            logger.info(
+                f"R²: {module_data['reconstruction_r2'].mean():.4f} "
+                f"± {module_data['reconstruction_r2'].std():.4f}"
+            )
+            logger.info(
+                f"FID: {module_data['fid_score'].mean():.2f} "
+                f"± {module_data['fid_score'].std():.2f}"
+            )
+            logger.info(
+                f"Dead Features: {module_data['dead_features_pct'].mean():.2%}"
+            )
+        else:
+            # Feature removal mode summary
+            for interval_str in config.timestep_intervals:
+                interval_key = interval_str
+                lpips_col = f"removal_{interval_key}_lpips"
+                fid_col = f"removal_{interval_key}_fid"
+                if lpips_col in module_data.columns:
+                    logger.info(f"\n    Interval {interval_key}:")
+                    logger.info(
+                        f"      LPIPS: {module_data[lpips_col].mean():.4f} "
+                        f"± {module_data[lpips_col].std():.4f}"
+                    )
+                    logger.info(
+                        f"      FID: {module_data[fid_col].mean():.2f} "
+                        f"± {module_data[fid_col].std():.2f}"
+                    )
 
 
 # =========================================================================== #
@@ -302,11 +324,8 @@ class FeatureKnockoutHook:
             bs, h, w, c = diff_cond.shape
             diff_cond = diff_cond.reshape(bs * h * w, c)
             sae_input, info = self.sae.preprocess_input(diff_cond)
-            ic(sae_input.shape)
             activations: Tensor = F.relu(self.sae.encode(sae_input))
             top_acts, _ = self.sae._get_topk(activations, k=self.sae.cfg.k)
-            ic(top_acts.squeeze(-1).shape)
-            ic(self.sae.W_dec.weight.shape)
             to_add: Tensor = self.sae.postprocess_output(
                 top_acts.squeeze(-1) @ self.sae.W_dec.weight.T, info
             )
@@ -324,8 +343,6 @@ class FeatureKnockoutHook:
                 1, device=output_tensor.device, dtype=output_tensor.dtype
             )
             multiplier = torch.cat([uncond, cond]).view(-1, 1, 1, 1)
-            ic(to_add.shape)
-            ic(top_acts.shape)
 
             # Subtract for knockout
             modified_output = output_tensor - to_add_permuted * multiplier
@@ -360,6 +377,11 @@ class SAEPerformanceAssessment:
 
         # Initialize LPIPS loss
         self.lpips_loss = lpips.LPIPS(net="alex").to(self.device)
+
+        # Initialize FID metric
+        self.fid_metric = FrechetInceptionDistance(
+            feature=2048, normalize=True
+        ).to(self.device)
 
         self.pipeline = HookedStableDiffusionPipeline.from_pretrained(
             config.model_id, torch_dtype=self.torch_dtype, safety_checker=None
@@ -419,6 +441,9 @@ class SAEPerformanceAssessment:
         # Get target module
         module = self._locate_module(target_module)
 
+        # Reset FID metric for this evaluation
+        self.fid_metric.reset()
+
         results = {
             "sae_path": sae_path,
             "target_module": target_module,
@@ -428,7 +453,7 @@ class SAEPerformanceAssessment:
             "mean_manhattan": [],
             "median_manhattan": [],
             "r2_scores": [],
-            "r2_scores_compound": [],  # For compound error evaluation
+            "r2_scores_compound": [],
         }
 
         for prompt in tqdm(prompts, desc=f"Seed {seed}"):
@@ -479,6 +504,16 @@ class SAEPerformanceAssessment:
             ).images[0]
 
             handle.remove()
+
+            # Update FID with original image
+            orig_tensor = (
+                torch.from_numpy(np.array(original_image))
+                .permute(2, 0, 1)
+                .unsqueeze(0)
+                .to(self.device)
+            )
+            orig_tensor = (orig_tensor * 255).byte()
+            self.fid_metric.update(orig_tensor, real=True)
 
             all_original = []
             all_reconstructed = []
@@ -569,6 +604,16 @@ class SAEPerformanceAssessment:
 
             handle.remove()
 
+            # Update FID with reconstructed image
+            recon_tensor = (
+                torch.from_numpy(np.array(reconstructed_image))
+                .permute(2, 0, 1)
+                .unsqueeze(0)
+                .to(self.device)
+            )
+            recon_tensor = (recon_tensor * 255).byte()
+            self.fid_metric.update(recon_tensor, real=False)
+
             # Convert images to tensors
             original_tensor = (
                 torch.from_numpy(np.array(original_image))
@@ -607,6 +652,10 @@ class SAEPerformanceAssessment:
                 results["timestep_r2"] = []
             results["timestep_r2"].append(timestep_r2)
 
+        # Compute FID after all images
+        fid_score = self.fid_metric.compute().item()
+        results["fid_score"] = fid_score
+
         # Compute averages
         results["avg_lpips"] = np.mean(results["lpips_scores"])
         results["avg_mean_manhattan"] = np.mean(results["mean_manhattan"])
@@ -627,7 +676,8 @@ class SAEPerformanceAssessment:
         logger.info(
             f"Results - Dead features: {dead_features_pct:.2%}, "
             f"R² (unbiased): {results['avg_r2']:.4f}, "
-            f"LPIPS (compound): {results['avg_lpips']:.4f}"
+            f"LPIPS (compound): {results['avg_lpips']:.4f}, "
+            f"FID: {fid_score:.2f}"
         )
 
         return results, sae
@@ -686,6 +736,9 @@ class SAEPerformanceAssessment:
                 "median_manhattan": [],
             }
 
+            # Reset FID metric for this interval
+            self.fid_metric.reset()
+
             # Setup feature removal hook
             removal_hook = FeatureKnockoutHook(
                 sae, self.config.num_inference_steps, interval
@@ -706,6 +759,16 @@ class SAEPerformanceAssessment:
                     ),
                 ).images[0]
 
+                # Update FID with original image
+                orig_tensor = (
+                    torch.from_numpy(np.array(original_image))
+                    .permute(2, 0, 1)
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
+                orig_tensor = (orig_tensor * 255).byte()
+                self.fid_metric.update(orig_tensor, real=True)
+
                 # Generate image with feature removal
                 handle = module.register_forward_hook(removal_hook)
                 removal_hook.current_step = 0  # Reset step counter
@@ -723,6 +786,16 @@ class SAEPerformanceAssessment:
                 ).images[0]
 
                 handle.remove()
+
+                # Update FID with modified image
+                mod_tensor = (
+                    torch.from_numpy(np.array(modified_image))
+                    .permute(2, 0, 1)
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
+                mod_tensor = (mod_tensor * 255).byte()
+                self.fid_metric.update(mod_tensor, real=False)
 
                 # Convert to tensors and compute metrics
                 original_tensor = (
@@ -760,6 +833,12 @@ class SAEPerformanceAssessment:
                     "median_manhattan"
                 ].append(median_manhattan)
 
+            # Compute FID for this interval
+            fid_score = self.fid_metric.compute().item()
+            results["timestep_intervals"][interval_key][
+                "fid_score"
+            ] = fid_score
+
             # Compute averages for this interval
             interval_results = results["timestep_intervals"][interval_key]
             interval_results["avg_lpips"] = np.mean(
@@ -770,6 +849,12 @@ class SAEPerformanceAssessment:
             )
             interval_results["avg_median_manhattan"] = np.mean(
                 interval_results["median_manhattan"]
+            )
+
+            logger.info(
+                f"Interval {interval_key} - LPIPS: "
+                f"{interval_results['avg_lpips']:.4f}, "
+                f"FID: {fid_score:.2f}"
             )
 
         return results, sae
@@ -843,6 +928,7 @@ class SAEPerformanceAssessment:
                                 "avg_median_manhattan"
                             ],
                             "reconstruction_r2": recon_results["avg_r2"],
+                            "fid_score": recon_results["fid_score"],
                             "avg_timestep_r2": recon_results.get(
                                 "avg_timestep_r2", {}
                             ),
@@ -869,6 +955,9 @@ class SAEPerformanceAssessment:
                         combined_result[
                             f"removal_{interval_key}_median_manhattan"
                         ] = interval_data["avg_median_manhattan"]
+                        combined_result[f"removal_{interval_key}_fid"] = (
+                            interval_data["fid_score"]
+                        )
 
                 module_results.append(combined_result)
                 all_results.append(combined_result)
