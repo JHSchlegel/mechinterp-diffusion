@@ -111,7 +111,7 @@ class SAEAssessmentConfig(Serializable):
     model_id: str = "stabilityai/stable-diffusion-2-1"
     """Hugging Face model ID"""
 
-    torch_dtype: str = "float32"
+    torch_dtype: str = "float16"
     """Torch data type (float16 or float32)"""
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -520,29 +520,57 @@ class SAEPerformanceAssessment:
             timestep_r2 = {}
 
             for activation_data in activation_collector:
+                # Load original diff in original dtype (float16) for memory
+                # and computational efficiency
                 original_diff = activation_data["diff"].to(
                     device=self.device, dtype=self.torch_dtype
                 )
                 _, H, W, C = original_diff.shape
                 original_diff_flat = original_diff.view(H * W, C)
 
-                sae_input, info = sae.preprocess_input(original_diff_flat)
-                activations = torch.relu(sae.encode(sae_input))
+                # Convert to float32 for high-precision preprocessing
+                original_diff_flat_f32 = original_diff_flat.float()
+
+                # Temporarily convert SAE to float32 for preprocessing
+                sae_dtype_original = sae.dtype
+                sae = sae.to(dtype=torch.float32)
+
+                # Preprocess with float32 precision
+                sae_input, info = sae.preprocess_input(original_diff_flat_f32)
+
+                # Convert SAE back to float16 for efficient encoding/decoding
+                sae = sae.to(dtype=self.torch_dtype)
+
+                # Process through SAE in float16 for efficiency
+                sae_input_f16 = sae_input.to(dtype=self.torch_dtype)
+                activations = torch.relu(sae.encode(sae_input_f16))
                 top_acts, _ = sae._get_topk(activations, k=sae.cfg.k)
-                reconstructed = sae.decode(top_acts)
+                reconstructed_f16 = sae.decode(top_acts)
 
+                # Convert back to float32 for storage and evaluation
+                reconstructed_f32 = reconstructed_f16.float()
+
+                # Store in float32 for accurate aggregation
                 all_original.append(sae_input.detach().cpu())
-                all_reconstructed.append(reconstructed.detach().cpu())
+                all_reconstructed.append(reconstructed_f32.detach().cpu())
 
+                # Compute per-timestep R2 in float64 for maximum precision
                 ts = activation_data["timestep"]
                 timestep_r2[ts] = explained_variance(
-                    x=sae_input.float(), x_reconstructed=reconstructed.float()
+                    x=sae_input.double(),
+                    x_reconstructed=reconstructed_f32.double(),
                 )
 
+                # Restore SAE to original dtype
+                sae = sae.to(dtype=sae_dtype_original)
+
+            # Aggregate all results in float32
             all_original = torch.cat(all_original).float()
             all_reconstructed = torch.cat(all_reconstructed).float()
+
             r2_score = explained_variance(
-                x=all_original, x_reconstructed=all_reconstructed
+                x=all_original.double(),
+                x_reconstructed=all_reconstructed.double(),
             )
 
             current_timestep[0] = 0
@@ -561,11 +589,17 @@ class SAEPerformanceAssessment:
                 original_diff_flat = original_diff.view(H * W, C)
 
                 # Process through SAE
-                sae_input, info = sae.preprocess_input(original_diff_flat)
-                activations = torch.relu(sae.encode(sae_input))
-                top_acts, _ = sae._get_topk(activations, k=sae.cfg.k)
-                reconstructed = sae.decode(top_acts)
-                sae_output = sae.postprocess_output(reconstructed, info)
+                sae_input, info = sae.preprocess_input(  # noqa: B023
+                    original_diff_flat
+                )
+                activations = torch.relu(sae.encode(sae_input))  # noqa: B023
+                top_acts, _ = sae._get_topk(  # noqa: B023
+                    activations, k=sae.cfg.k  # noqa: B023
+                )
+                reconstructed = sae.decode(top_acts)  # noqa: B023
+                sae_output = sae.postprocess_output(  # noqa: B023
+                    reconstructed, info
+                )
 
                 # Reshape and create reconstructed output
                 reconstructed_diff = sae_output.view(1, H, W, C).permute(
