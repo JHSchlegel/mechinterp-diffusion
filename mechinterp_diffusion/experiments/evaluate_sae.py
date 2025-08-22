@@ -40,6 +40,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from config import TopKSAEConfig
 from core.diffusion.hooked_sd_pipeline import HookedStableDiffusionPipeline
+from core.sae.metrics import explained_variance
 from core.sae.topk_sae import TopKSAE
 from core.utils.analysis_utils import get_block_label
 from core.utils.hooks import TimedHook
@@ -150,25 +151,6 @@ class SAEAssessmentConfig(Serializable):
 # =========================================================================== #
 #                              Helper Functions                               #
 # =========================================================================== #
-
-
-def compute_r_squared(original: Tensor, reconstructed: Tensor) -> float:
-    """Compute explained variance (R²).
-
-    Args:
-        original (Tensor): Original input
-        reconstructed (Tensor): Reconstructed input
-
-    Returns:
-        float: R2 score
-    """
-    diff = original - reconstructed
-    diff_var = torch.var(diff, dim=0, unbiased=False)
-    original_var = torch.var(original, dim=0, unbiased=False)
-    explained_var = 1 - diff_var / (original_var + 1e-8)
-    return explained_var.mean().item()
-
-
 def compute_manhattan_distance(
     img1: Tensor, img2: Tensor
 ) -> Tuple[float, float]:
@@ -518,13 +500,15 @@ class SAEPerformanceAssessment:
                 all_reconstructed.append(reconstructed.detach().cpu())
 
                 ts = activation_data["timestep"]
-                timestep_r2[ts] = compute_r_squared(
-                    sae_input.float(), reconstructed.float()
+                timestep_r2[ts] = explained_variance(
+                    x=sae_input.float(), x_reconstructed=reconstructed.float()
                 )
 
             all_original = torch.cat(all_original).float()
             all_reconstructed = torch.cat(all_reconstructed).float()
-            r2_score = compute_r_squared(all_original, all_reconstructed)
+            r2_score = explained_variance(
+                x=all_original, x_reconstructed=all_reconstructed
+            )
 
             current_timestep[0] = 0
 
