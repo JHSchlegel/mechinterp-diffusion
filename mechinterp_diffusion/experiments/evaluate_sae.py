@@ -68,8 +68,8 @@ class SAEAssessmentConfig(Serializable):
     # SAE and model configuration
     sae_paths: List[str] = field(
         default_factory=lambda: [
-            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",
+            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
+            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
         ]
     )
     """Paths to SAE model checkpoints"""
@@ -99,11 +99,11 @@ class SAEAssessmentConfig(Serializable):
     """Number of prompts to evaluate"""
 
     # Evaluation configuration
-    seeds: List[int] = field(default_factory=lambda: [42, 123, 456, 789, 1337])
+    seeds: List[int] = field(default_factory=lambda: [42, 43, 44, 45, 46])
     """Random seeds for evaluation"""
 
     timestep_intervals: List[str] = field(
-        default_factory=lambda: ["0-4", "10-14", "20-24"]
+        default_factory=lambda: ["0-9", "10-19", "20-24"]
     )
     """Timestep intervals for feature removal (format: 'start-end')"""
 
@@ -310,17 +310,21 @@ class FeatureKnockoutHook:
 
     def __call__(self, module, input, output):
         """Apply feature removal if within specified interval."""
-        if (
+        should_knockout = (
             self.removal_interval[0]
             <= self.current_step
             <= self.removal_interval[1]
-        ):
+        )
+        self.current_step = (self.current_step + 1) % self.total_steps
+        if should_knockout:
             diff = (
                 (output[0] - input[0])
                 .permute((0, 2, 3, 1))
                 .to(self.sae.device)
             )
+
             _, diff_cond = diff.chunk(2)
+
             bs, h, w, c = diff_cond.shape
             diff_cond = diff_cond.reshape(bs * h * w, c)
             sae_input, info = self.sae.preprocess_input(diff_cond)
@@ -328,7 +332,7 @@ class FeatureKnockoutHook:
             top_acts, _ = self.sae._get_topk(activations, k=self.sae.cfg.k)
             to_add: Tensor = self.sae.postprocess_output(
                 top_acts.squeeze(-1) @ self.sae.W_dec.weight.T, info
-            )
+            ).reshape(-1, h, w, c)
 
             output_tensor = output[0]
 
@@ -346,15 +350,11 @@ class FeatureKnockoutHook:
 
             # Subtract for knockout
             modified_output = output_tensor - to_add_permuted * multiplier
+
             return (modified_output,)
 
         else:
-            # Normal pass-through
-            result = output
-
-        # Increment step counter
-        self.current_step = (self.current_step + 1) % self.total_steps
-        return result
+            return output
 
 
 # =========================================================================== #
