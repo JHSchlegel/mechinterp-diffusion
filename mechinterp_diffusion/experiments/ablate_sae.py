@@ -47,7 +47,9 @@ from core.utils.reproducibility import set_all_seeds
 # =========================================================================== #
 #                             Main Hydra Script                               #
 # =========================================================================== #
-@hydra.main(version_base=None, config_path="../configs", config_name="config")
+@hydra.main(
+    version_base=None, config_path="../ablation_configs", config_name="config"
+)
 def main(cfg: AblationConfig) -> None:
     """Main efunction for Hydra-based ablation study."""
     logger.info(f"Running with config:\n{OmegaConf.to_yaml(cfg)}")
