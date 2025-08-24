@@ -155,5 +155,3 @@ for idx in 0 1; do
         --target_module "$HOOK_NAME" \
         --height 768 --width 768
 done
-
-'
