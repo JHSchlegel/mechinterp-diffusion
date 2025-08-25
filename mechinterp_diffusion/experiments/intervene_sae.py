@@ -550,7 +550,7 @@ class SAEInterventionManager:
 
                 grid_images.append(feature_row)
 
-            grid_path = os.path.join(prompt_dir, "grid_visualization.png")
+            grid_path = os.path.join(prompt_dir, "grid_visualization.pdf")
             column_labels = ["Original"] + self.config.intervention_values
 
             self._visualize_grid_results(
@@ -1040,11 +1040,12 @@ class SAEInterventionManager:
             hspace=0.01,
         )
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.savefig(save_path.replace(".pdf", ".png"), bbox_inches="tight")
         plt.close(fig)
 
         self._create_difference_grid(
             grid_images,
-            save_path.replace(".png", "_differences.png"),
+            save_path.replace(".pdf", "_differences.png"),
             intervention_values,
             feature_indices,
             prompt,
