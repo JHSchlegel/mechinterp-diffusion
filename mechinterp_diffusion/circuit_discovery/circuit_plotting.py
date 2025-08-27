@@ -293,3 +293,45 @@ def _plot_hierarchical_circuit(
     plt.close(fig)
 
     logger.info(f"Circuit plot saved to {final_save_path}")
+
+
+if __name__ == "__main__":
+    # Example usage with dummy data
+    import numpy as np
+
+    num_timesteps = 10
+    num_features = 50
+
+    dummy_nodes = {
+        t: SparseAct(
+            act=torch.randn(num_features) * (0.5 + 0.5 * np.exp(-t / 5))
+        )  # Decay over time
+        for t in range(num_timesteps)
+    }
+    dummy_edges = {}
+    # Markov chain: only adjacent timesteps
+    for t_early in range(num_timesteps - 1):
+        t_late = t_early + 1  # Only connect to next timestep
+        weight_matrix = torch.randn(10, 10) * 0.1
+        early_features = torch.randint(0, num_features, (10,))
+        late_features = torch.randint(0, num_features, (10,))
+        dummy_edges[(t_early, t_late)] = {
+            "weight_matrix": weight_matrix,
+            "early_features": early_features,
+            "late_features": late_features,
+        }
+
+    # Save to dummy_circuit folder
+    os.makedirs("dummy_circuit", exist_ok=True)
+
+    plot_causal_circuit(
+        nodes=dummy_nodes,
+        edges=dummy_edges,
+        timesteps=list(range(num_timesteps)),
+        save_path="dummy_circuit/circuit.png",
+        node_threshold=0.2,
+        edge_threshold=0.05,
+        top_k_nodes=5,
+        top_k_edges=20,
+        num_inference_steps=num_timesteps,
+    )
