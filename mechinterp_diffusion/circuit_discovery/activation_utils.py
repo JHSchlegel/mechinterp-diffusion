@@ -1,9 +1,13 @@
 """
+This module contains the SparseAct class, a helper for representing sparse
+feature activations from an SAE, including the residual error term.
+
 Source:
 https://github.com/saprmarks/feature-circuits/blob/main/activation_utils.py
 
 Adaptations:
     - Formatted using black and isort formatting
+    - Added additional methods for diffusion model compatibility
 
 MIT License
 
@@ -28,15 +32,25 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+# =========================================================================== #
+#                            Packages and Presets                             #
+# =========================================================================== #
+
+
 from __future__ import annotations
 
 import torch as t
+
+# =========================================================================== #
+#                      SparseAct Class Definition                             #
+# =========================================================================== #
 
 
 class SparseAct:
     """
     A SparseAct is a helper class which represents a vector in the sparse
-        feature basis provided by an SAE, jointly with the SAE error term.
+    feature basis provided by an SAE, jointly with the SAE error term.
+
     A SparseAct may have three fields:
     act : the feature activations in the sparse basis
     res : the SAE error term
@@ -137,8 +151,8 @@ class SparseAct:
             return f"SparseAct(act={self.act}, res={self.res})"
         else:
             raise ValueError(
-                "SparseAct has both residual and contracted residual. This is "
-                "an unsupported state."
+                "SparseAct has both residual and contracted residual. "
+                "This is an unsupported state."
             )
 
     def sum(self, dim=None):
@@ -192,14 +206,22 @@ class SparseAct:
             assert self.resc is not None
             return t.cat([self.act, self.resc], dim=-1)
         raise ValueError(
-            "SparseAct has both residual and contracted residual. This is an "
-            "unsupported state."
+            "SparseAct has both residual and contracted residual. "
+            "This is an unsupported state."
         )
 
     def to(self, device):
         for attr in ["act", "res", "resc"]:
             if getattr(self, attr) is not None:
                 setattr(self, attr, getattr(self, attr).to(device))
+        return self
+
+    def requires_grad_(self, requires_grad: bool = True) -> SparseAct:
+        self.act.requires_grad_(requires_grad)
+        if self.res is not None:
+            self.res.requires_grad_(requires_grad)
+        if self.resc is not None:
+            self.resc.requires_grad_(requires_grad)
         return self
 
     def __eq__(self, other):  # type: ignore
@@ -228,3 +250,25 @@ class SparseAct:
 
     def abs(self):
         return self._map(lambda x, _: x.abs())
+
+    def unsqueeze(self, dim: int) -> SparseAct:
+        """Unsqueeze dimension."""
+        return self._map(lambda x: x.unsqueeze(dim))
+
+    def reshape(self, *shape) -> SparseAct:
+        """Reshape tensors."""
+        return SparseAct(
+            act=self.act.reshape(*shape),
+            res=self.res.reshape(*shape) if self.res is not None else None,
+        )
+
+    def flatten(self, start_dim: int = 0, end_dim: int = -1) -> SparseAct:
+        """Flatten tensors."""
+        return SparseAct(
+            act=self.act.flatten(start_dim, end_dim),
+            res=(
+                self.res.flatten(start_dim, end_dim)
+                if self.res is not None
+                else None
+            ),
+        )
