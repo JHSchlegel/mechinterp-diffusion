@@ -35,7 +35,6 @@ def clear_memory_cache(device: str = "cuda"):
 def compute_clean_pass_and_grads(
     model: HookedStableDiffusionPipeline,
     sae: TopKSAE,
-    probe: LatentProbe,
     hook_name: str,
     timesteps_to_analyze: List[int],
     probe_timestep_idx: int,
@@ -140,7 +139,7 @@ def compute_clean_pass_and_grads(
         width=width,
     )
 
-    probe_out_val = context["probe_output"].item()
+    metric_val = context["probe_output"].item()
     context["probe_output"].sum().backward()
 
     clean_acts = {}
@@ -157,7 +156,7 @@ def compute_clean_pass_and_grads(
             ),
         )
 
-    return clean_acts, grads, probe_out_val  # , context["preprocess_info"]
+    return clean_acts, grads, metric_val  # , context["preprocess_info"]
 
 
 def extract_activations(
@@ -174,9 +173,12 @@ def extract_activations(
     probe_timestep_idx,
     height,
     width,
+    metric_fn=None,
+    **kwargs,
 ):
     acts = {}
-    preprocess_info = {}
+    # preprocess_info = {}
+    metric_val = None
 
     max_timestep_needed = max(max(timesteps_to_analyze), probe_timestep_idx)
 
@@ -203,18 +205,22 @@ def extract_activations(
         diff = (module_output - module_input).to(device)
         ic(diff.shape)
 
-        sae_input, info = sae.preprocess_input(diff)
-        preprocess_info[t_idx] = info
+        # Convert to 4D like in clean pass:
+        # (batch, seq_len, channels) -> (batch, h, w, channels)
+        b, seq_len, c = diff.shape
+        h = w = int(seq_len**0.5)
+        diff = diff.reshape(b, h, w, c)
 
+        # Same processing as compute_clean_pass_and_grads
         with torch.no_grad():
-            sae_out_dict = sae(sae_input)
+            sae_out_dict = sae(diff)
 
-        b, seq_len, _ = diff.shape
+        b, h, w, c = diff.shape
 
-        feature_acts = sae_out_dict["feature_acts"].reshape(b, seq_len, -1)
-        x_reconstructed = sae_out_dict["sae_out"].reshape(b, seq_len, -1)
+        feature_acts = sae_out_dict["feature_acts"].reshape(b, h, w, -1)
+        x_reconstructed = sae_out_dict["sae_out"].reshape(b, h, w, -1)
 
-        sae_input_3d = sae_input.reshape(b, seq_len, -1)
+        sae_input_3d = diff.reshape(b, h, w, c)
         residual = (
             sae_input_3d - x_reconstructed if include_residuals else None
         )
@@ -232,9 +238,19 @@ def extract_activations(
             ),
         )
 
+    # Compute metric at probe timestep if metric_fn provided
+    if metric_fn is not None:
+        output = cache["output"][hook_name][:, probe_timestep_idx].clone()
+        import math
+
+        h = w = math.sqrt(output.shape[1])
+        probe_input = output.chunk(2, dim=0)[1].reshape(1, -1, int(h), int(w))
+        metric_val = metric_fn(probe_input.to(device).to(torch.float32))
+        metric_val = metric_val.item()
+
     del cache
     clear_memory_cache(device)
-    return acts, preprocess_info
+    return acts, metric_val
 
 
 if __name__ == "__main__":
@@ -283,7 +299,7 @@ if __name__ == "__main__":
     use_cpu_offload = False
     include_residuals = True
 
-    acts, preprocess_info = extract_activations(
+    acts, _ = extract_activations(
         model=model,
         sae=sae,
         hook_name=hook_name,
@@ -351,7 +367,7 @@ if __name__ == "__main__":
         width=width,
     )
 
-    # logger.info(f"Probe output value: {probe_out_val:.6f}")
+    logger.info(f"Probe output value: {probe_out_val:.6f}")
 
     for t_idx in timesteps_to_analyze:
         logger.info(f"\nTimestep {t_idx}:")
