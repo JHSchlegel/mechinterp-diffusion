@@ -48,20 +48,24 @@ PROMPT_PAIRS = [
     #     "control": "A headshot photo of a man",
     # },
     # {
-    #     "source": "A headshot photo of a man",
-    #     "control": "A headshot photo of a woman",
+    #     "source": "A portrait of a person smiling",
+    #     "control": "A portrait of a person frowning",
     # },
     # {
-    #     "source": "A high-resolution photo of a rose",
-    #     "control": "A high-resolution photo of a dog",
+    #     "source": "A portrait of a person with dreadlocks",
+    #     "control": "A portrait of a person",
     # },
+    {
+        "source": "A bear in a forest.",
+        "control": "A bear in the arctic.",
+    },
     {
         "source": "A high-resolution photo of a cat.",
         "control": "A high-resolution photo of a bird.",
     },
     {
-        "source": "A photo-realistic image of a bird.",
-        "control": "A photo-realistic image of a cat.",
+        "source": "A high-resolution photo of a bird.",
+        "control": "A high-resolution photo of a cat.",
     },
     {
         "source": "A high-resolution photo of a dog.",
@@ -72,16 +76,28 @@ PROMPT_PAIRS = [
         "control": "A high-resolution photo of a man.",
     },
     {
+        "source": "A high-resolution photo of a man.",
+        "control": "A high-resolution photo of a man.",
+    },
+    {
         "source": "A crystal clear mountain lake.",
         "control": "A crystal clear ocean bay.",
     },
     {
-        "source": "A gothic cathedral with tall spires.",
-        "control": "A modern skyscraper with glass facade.",
+        "source": "A castle on a sunny day.",
+        "control": "A castle on a stormy day.",
     },
     {
-        "source": " An ancient, gnarled oak tree in a forest.",
-        "control": " A tall, slender palm tree on a tropical beach.",
+        "source": "A ship sailing on a calm ocean.",
+        "control": "A ship sailing on a rough ocean.",
+    },
+    {
+        "source": "An image of a tall cathedral.",
+        "control": "An image of a tall glass skyscraper.",
+    },
+    {
+        "source": "A city street during the day.",
+        "control": "A city street at night.",
     },
 ]
 
@@ -102,16 +118,16 @@ class ActivationPatchingConfig(Serializable):
 
     sae_paths: List[str] = field(
         default_factory=lambda: [
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
             "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
+            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
         ]
     )
     """Paths to the trained TopKSAE model directories."""
 
     hook_names: List[str] = field(
         default_factory=lambda: [
-            "unet.up_blocks.1.attentions.1",
             "unet.down_blocks.2.attentions.0",
+            "unet.up_blocks.1.attentions.1",
         ]
     )
     """Names of the model components to hook for activation patching."""
@@ -134,10 +150,10 @@ class ActivationPatchingConfig(Serializable):
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     """Device to run computations on."""
 
-    height: int = 768
+    height: int = 512
     """Height of the generated images."""
 
-    width: int = 768
+    width: int = 512
     """Width of the generated images."""
 
     # -------------------------------------------------------------------------
@@ -300,6 +316,7 @@ def find_top_k_features(
 
         with torch.no_grad():
             all_feature_acts = []
+
             for t_idx in range(config.num_inference_steps):
                 # Extract cached activations
                 input_cached = cache["input"][hook_name][:, t_idx]
@@ -329,7 +346,7 @@ def find_top_k_features(
     relative_s_src = s_src / (total_s_src + 1e-9)
     relative_s_ctrl = s_ctrl / (total_s_ctrl + 1e-9)
 
-    # Compute gamma score (differential activation)
+    # Compute gamma score (differential activation) form surkov et al.
     gamma = relative_s_src - relative_s_ctrl
     _, top_k_indices = torch.topk(gamma, k)
 
@@ -701,9 +718,9 @@ def create_paper_figure(
     fig_width = 3 * n_images  # 3 inches per image
     fig, axes = plt.subplots(1, n_images, figsize=(fig_width, 3.5))
 
-    # Control image on the left
+    # Destination image on the left
     axes[0].imshow(results["control_img"])
-    axes[0].set_title("Control", fontsize=28, fontweight="bold")
+    axes[0].set_title("Destination", fontsize=28, fontweight="bold")
     axes[0].axis("off")
 
     # K variations in the middle (lowest to highest)
