@@ -107,7 +107,7 @@ class ActivationPatchingConfig(Serializable):
     sae_paths: List[str] = field(
         default_factory=lambda: [
             "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
+            # "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
         ]
     )
     """Paths to the trained TopKSAE model directories."""
@@ -115,7 +115,7 @@ class ActivationPatchingConfig(Serializable):
     hook_names: List[str] = field(
         default_factory=lambda: [
             "unet.down_blocks.2.attentions.0",
-            "unet.up_blocks.1.attentions.1",
+            # "unet.up_blocks.1.attentions.1",
         ]
     )
     """Names of the model components to hook for activation patching."""
@@ -132,7 +132,7 @@ class ActivationPatchingConfig(Serializable):
     seed: int = 42
     """Random seed for reproducible results."""
 
-    output_dir: str = "../../results/patching"
+    output_dir: str = "../../results/patching_pure"
     """Directory to save experiment results and generated images."""
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -286,7 +286,8 @@ def find_top_k_features(
         width (int, optional): Width of the input images. Defaults to 512.
 
     Returns:
-        Tuple[List[int], List[int]]: Indices of the top-k most differentially
+        Tuple[List[int], List[int], List[float], List[float]]:
+        Indices and differentials of the top-k most differentially
             active features for source and control prompts.
     """
     logger.info(f"Finding top {k} differentially active features:")
@@ -350,10 +351,25 @@ def find_top_k_features(
 
     # Compute gamma score (differential activation) form surkov et al.
     gamma = relative_s_src - relative_s_ctrl
-    _, top_k_source = torch.topk(gamma, k)
-    _, top_k_control = torch.topk(-gamma, k)
+    abs_gamma = torch.abs(gamma)
+    _, top_k_indices = torch.topk(abs_gamma, k)
 
-    return top_k_source.tolist(), top_k_control.tolist()
+    # Separate into source and control based on sign
+    source_indices = []
+    control_indices = []
+
+    for idx in top_k_indices:
+        if gamma[idx] > 0:
+            source_indices.append(idx.item())
+        else:
+            control_indices.append(idx.item())
+
+    logger.info(
+        f"Found {len(source_indices)} source features and "
+        f"{len(control_indices)} control features"
+    )
+
+    return source_indices, control_indices, gamma
 
 
 def extract_activations(
@@ -678,7 +694,7 @@ def run_experiment_with_k_grid(
     logger.info(
         f"Finding top {max_k} features (will subset for smaller k values)..."
     )
-    source_features, _ = find_top_k_features(
+    source_features, _, _ = find_top_k_features(
         pipe,
         sae,
         source_prompt,
@@ -830,7 +846,7 @@ def run_bidirectional_mode(
     # Find features
     max_k = max(config.k_values)
     logger.info("Finding top-k features for bidirectional mode...")
-    source_features, control_features = find_top_k_features(
+    _, _, gamma = find_top_k_features(
         pipe,
         sae,
         source_prompt,
@@ -856,26 +872,24 @@ def run_bidirectional_mode(
         },
     }
 
-    feature_counts = {}
-
     for k in sorted(config.k_values):
-        # Get bidirectional
-        source_set = set(source_features[:k])
-        control_set = set(control_features[:k])
-        bidirectional_features = list(source_set | control_set)
 
-        # Track statistics
-        source_only = source_set - control_set
-        assert len(source_only) == k
-        control_only = control_set - source_set
-        shared = source_set & control_set
+        _, top_k_indices = torch.topk(torch.abs(gamma), k)
 
-        feature_counts[k] = {
-            "total": len(bidirectional_features),
-            "shared": len(shared),
-            "source_only": len(source_only),
-            "control_only": len(control_only),
-        }
+        # Separate into source and control based on sign
+        source_features = []
+        control_features = []
+
+        for idx in top_k_indices:
+            if gamma[idx] > 0:
+                source_features.append(idx.item())
+            else:
+                control_features.append(idx.item())
+
+        logger.info(
+            f"Found {len(source_features)} source features and "
+            f"{len(control_features)} control features"
+        )
 
         # Extract vectors for bidirectional
         # Inefficient af, but works.
@@ -883,7 +897,7 @@ def run_bidirectional_mode(
             pipe,
             sae,
             source_prompt,
-            bidirectional_features,
+            source_features,
             config.patching_timestep_indices,
             config,
             hook_name,
@@ -894,7 +908,7 @@ def run_bidirectional_mode(
             pipe,
             sae,
             control_prompt,
-            bidirectional_features,
+            control_features,
             config.patching_timestep_indices,
             config,
             hook_name,
@@ -924,8 +938,8 @@ def run_bidirectional_mode(
 
         src_to_ctrl_dir = base_save_dir / "source_to_control"
         src_to_ctrl_dir.mkdir(exist_ok=True)
-        patched_img.save(src_to_ctrl_dir / f"k_{2*k}.png")
-        results["source_to_control"]["k_results"][2 * k] = patched_img
+        patched_img.save(src_to_ctrl_dir / f"k_{k}.png")
+        results["source_to_control"]["k_results"][k] = patched_img
 
         # Control -> Source
         hook_fn = create_bidirectional_hook(
@@ -949,20 +963,13 @@ def run_bidirectional_mode(
 
         ctrl_to_src_dir = base_save_dir / "control_to_source"
         ctrl_to_src_dir.mkdir(exist_ok=True)
-        patched_img.save(ctrl_to_src_dir / f"k_{2*k}.png")
-        results["control_to_source"]["k_results"][2 * k] = patched_img
-
-        # Save feature info
-        with open(base_save_dir / f"features_k_{k}.txt", "w") as f:
-            f.write(f"Total features: {len(bidirectional_features)}\n")
-            f.write(f"Source-only features: {sorted(source_only)}\n")
-            f.write(f"Control-only features: {sorted(control_only)}\n")
-            f.write(f"Shared features: {sorted(shared)}\n")
+        patched_img.save(ctrl_to_src_dir / f"k_{k}.png")
+        results["control_to_source"]["k_results"][k] = patched_img
 
     # Source to Control:
     create_paper_figure(
         results["source_to_control"],
-        [2 * k for k in config.k_values],
+        [k for k in config.k_values],
         base_save_dir / "source_to_control",
         config.figure_dpi,
     )
@@ -970,7 +977,7 @@ def run_bidirectional_mode(
     # Control to Source:
     create_paper_figure(
         results["control_to_source"],
-        [2 * k for k in config.k_values],
+        [k for k in config.k_values],
         base_save_dir / "control_to_source",
         config.figure_dpi,
     )
