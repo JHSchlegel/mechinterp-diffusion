@@ -43,18 +43,6 @@ DTYPE_MAP = {
 # =========================================================================== #
 
 PROMPT_PAIRS = [
-    # {
-    #     "source": "A headshot photo of a woman",
-    #     "control": "A headshot photo of a man",
-    # },
-    # {
-    #     "source": "A portrait of a person smiling",
-    #     "control": "A portrait of a person frowning",
-    # },
-    # {
-    #     "source": "A portrait of a person with dreadlocks",
-    #     "control": "A portrait of a person",
-    # },
     {
         "source": "A bear in a forest.",
         "control": "A bear in the arctic.",
@@ -76,17 +64,17 @@ PROMPT_PAIRS = [
         "control": "A high-resolution photo of a man.",
     },
     {
-        "source": "A high-resolution photo of a man.",
-        "control": "A high-resolution photo of a man.",
+        "source": "A portrait of a man.",
+        "control": "A portrait of a dog.",
     },
     {
         "source": "A crystal clear mountain lake.",
         "control": "A crystal clear ocean bay.",
     },
-    {
-        "source": "A castle on a sunny day.",
-        "control": "A castle on a stormy day.",
-    },
+    # {
+    #     "source": "A castle on a sunny day.",
+    #     "control": "A castle on a stormy day.",
+    # },
     {
         "source": "A ship sailing on a calm ocean.",
         "control": "A ship sailing on a rough ocean.",
@@ -95,10 +83,10 @@ PROMPT_PAIRS = [
         "source": "An image of a tall cathedral.",
         "control": "An image of a tall glass skyscraper.",
     },
-    {
-        "source": "A city street during the day.",
-        "control": "A city street at night.",
-    },
+    # {
+    #     "source": "A city street during the day.",
+    #     "control": "A city street at night.",
+    # },
 ]
 
 # =========================================================================== #
@@ -165,19 +153,20 @@ class ActivationPatchingConfig(Serializable):
     steps.
     """
 
-    patching_method: Literal["replace", "ablate_and_replace"] = (
-        "ablate_and_replace"
-    )
+    patching_method: Literal["replace", "ablate_and_replace"] = "replace"
     """Patching method: 'replace' or 'ablate_and_replace'."""
+
+    experiment_mode: Literal["standard", "union"] = "union"
+    """Experiment mode: standard (only one direction) or union."""
 
     k_values: List[int] = field(default_factory=lambda: [1, 5, 20, 50, 200])
     """Grid of k values (number of top features to patch)."""
 
-    patch_scale: float = 2.0
-    """Factor to scale the patch vector by."""
+    add_scale: float = 2.0
+    """Scale for adding features."""
 
-    reconstruct_scale: float = 1.0
-    """Scale factor for reconstruction strength. Will be subtracted."""
+    subtract_scale: float = 1.0
+    """Scale for subtracting features."""
 
     # -------------------------------------------------------------------------
     # Experiment settings
@@ -237,16 +226,28 @@ def main():
             logger.info(f"Control: {control_prompt[:50]}...")
             logger.info(f"{'-'*80}")
 
-            run_experiment_with_k_grid(
-                source_prompt,
-                control_prompt,
-                config,
-                pipe,
-                sae,
-                hook_name,
-                height=config.height,
-                width=config.width,
-            )
+            if config.experiment_mode == "standard":
+                run_experiment_with_k_grid(
+                    source_prompt,
+                    control_prompt,
+                    config,
+                    pipe,
+                    sae,
+                    hook_name,
+                    height=config.height,
+                    width=config.width,
+                )
+            else:
+                run_union_mode(
+                    source_prompt,
+                    control_prompt,
+                    config,
+                    pipe,
+                    sae,
+                    hook_name,
+                    height=config.height,
+                    width=config.width,
+                )
 
     logger.info("All experiments complete!")
 
@@ -267,7 +268,7 @@ def find_top_k_features(
     hook_name: str,
     height: int = 512,
     width: int = 512,
-) -> List[int]:
+) -> Tuple[List[int], List[int]]:
     """
     Find top-k differentially active features between source and control
     prompts.
@@ -285,7 +286,8 @@ def find_top_k_features(
         width (int, optional): Width of the input images. Defaults to 512.
 
     Returns:
-        List[int]: Indices of the top-k most differentially active features.
+        Tuple[List[int], List[int]]: Indices of the top-k most differentially
+            active features for source and control prompts.
     """
     logger.info(f"Finding top {k} differentially active features:")
 
@@ -348,15 +350,16 @@ def find_top_k_features(
 
     # Compute gamma score (differential activation) form surkov et al.
     gamma = relative_s_src - relative_s_ctrl
-    _, top_k_indices = torch.topk(gamma, k)
+    _, top_k_source = torch.topk(gamma, k)
+    _, top_k_control = torch.topk(-gamma, k)
 
-    return top_k_indices.tolist()
+    return top_k_source.tolist(), top_k_control.tolist()
 
 
-def extract_source_patch_vectors(
+def extract_activations(
     pipe: HookedStableDiffusionPipeline,
     sae: TopKSAE,
-    source_prompt: str,
+    prompt: str,
     causal_feature_indices: List[int],
     timestep_indices: List[int],
     config: ActivationPatchingConfig,
@@ -370,7 +373,7 @@ def extract_source_patch_vectors(
     Args:
         pipe (HookedStableDiffusionPipeline): The diffusion model pipeline.
         sae (TopKSAE): The sparse autoencoder.
-        source_prompt (str): Source prompt to extract features from.
+        prompt (str): Prompt to extract features from.
         causal_feature_indices (List[int]): Indices of features to patch.
         timestep_indices (List[int]): Timesteps to extract patches for.
             config: Configuration object.
@@ -381,11 +384,10 @@ def extract_source_patch_vectors(
         Tuple[Dict[int, torch.Tensor], List[Image.Image]]: Patch vectors and
             source image.
     """
-    logger.info("Extracting source patch vectors for causal features...")
 
     generator = torch.Generator(config.device).manual_seed(config.seed)
-    source_img, source_cache = pipe.run_with_cache(
-        prompt=source_prompt,
+    img, cache = pipe.run_with_cache(
+        prompt=prompt,
         positions_to_cache=[hook_name],
         num_inference_steps=config.num_inference_steps,
         guidance_scale=config.guidance_scale,
@@ -396,16 +398,14 @@ def extract_source_patch_vectors(
         width=width,
     )
 
-    source_patch_vectors = {}
+    activations = {}
     with torch.no_grad():
         for t_idx in timestep_indices:
-            source_input_cached = source_cache["input"][hook_name][:, t_idx]
-            source_output_cached = source_cache["output"][hook_name][:, t_idx]
-            source_diff = (source_output_cached - source_input_cached).to(
-                config.device
-            )
+            input_cached = cache["input"][hook_name][:, t_idx]
+            output_cached = cache["output"][hook_name][:, t_idx]
+            diff = (output_cached - input_cached).to(config.device)
 
-            sae_in, _ = sae.preprocess_input(source_diff)
+            sae_in, _ = sae.preprocess_input(diff)
             feature_acts = torch.relu(sae.encode(sae_in))
             top_acts, _ = sae._get_topk(feature_acts, k=sae.cfg.k)
 
@@ -416,19 +416,23 @@ def extract_source_patch_vectors(
             reconstructed = sae.decode(causal_acts)
             reconstructed_post = sae.postprocess_output(reconstructed, {})
 
-            B, HW, C = source_diff.shape
+            B, HW, C = diff.shape
             H = W = int(np.sqrt(HW))
-            source_patch_vectors[t_idx] = (
+            activations[t_idx] = (
                 reconstructed_post.reshape(B, HW, C)
                 .permute(0, 2, 1)
                 .reshape(B, C, H, W)
             )
 
-    logger.info("Successfully extracted patch vectors")
-    return source_patch_vectors, source_img
+    return activations, img
 
 
-def create_patching_hook(
+# =========================================================================== #
+#                           Hook Creation Functions                           #
+# =========================================================================== #
+
+
+def create_standard_hook(
     source_patch_vectors: Dict[int, torch.Tensor],
     sae: TopKSAE,
     timestep_indices: List[int],
@@ -524,6 +528,59 @@ def create_patching_hook(
     return hook_fn
 
 
+def create_union_hook(
+    add_vectors: Dict[int, torch.Tensor],
+    subtract_vectors: Dict[int, torch.Tensor],
+    timestep_indices: List[int],
+    add_scale: float = 1.0,
+    subtract_scale: float = 1.0,
+) -> Callable:
+    """
+    Create hook for feature arithmetic: add some features, subtract others.
+
+    Args:
+        add_vectors (Dict[int, torch.Tensor]): Vectors to add at each timestep.
+        subtract_vectors (Dict[int, torch.Tensor]): Vectors to subtract at
+            each timestep.
+        timestep_indices (List[int]): Timesteps at which to apply the hook.
+        add_scale (float, optional): Scaling factor for added features.
+            Defaults to 1.0.
+        subtract_scale (float, optional): Scaling factor for subtracted
+            features. Defaults to 1.0.
+    """
+    hook_state = {"step_idx": 0}
+
+    def hook_fn(
+        module, in_tensor: torch.Tensor, out_tensor: torch.Tensor
+    ) -> torch.Tensor:
+        t_idx = hook_state["step_idx"]
+
+        if t_idx in timestep_indices:
+            out_tensor_val = out_tensor[0]
+
+            add_patch = (
+                add_vectors[t_idx][0].to(out_tensor_val.dtype) * add_scale
+            )
+            subtract_patch = (
+                subtract_vectors[t_idx][0].to(out_tensor_val.dtype)
+                * subtract_scale
+            )
+
+            if out_tensor_val.shape[0] == 2:  # Classifier-free guidance
+                out_tensor_val[1] += add_patch
+                out_tensor_val[1] -= subtract_patch
+                out_tensor_val[0] -= add_patch
+                out_tensor_val[0] += subtract_patch
+            else:
+                out_tensor_val += add_patch
+                out_tensor_val -= subtract_patch
+
+        hook_state["step_idx"] += 1
+        return out_tensor
+
+    return hook_fn
+
+
 # =========================================================================== #
 #                            Experiment Functions                            #
 # =========================================================================== #
@@ -574,6 +631,7 @@ def run_experiment_with_k_grid(
     base_save_dir = (
         Path(config.output_dir)
         / block_name
+        / Path(config.experiment_mode)
         / prompt_folder
         / ts_folder
         / f"{timestamp}"
@@ -620,7 +678,7 @@ def run_experiment_with_k_grid(
     logger.info(
         f"Finding top {max_k} features (will subset for smaller k values)..."
     )
-    all_causal_features = find_top_k_features(
+    source_features, _ = find_top_k_features(
         pipe,
         sae,
         source_prompt,
@@ -637,10 +695,10 @@ def run_experiment_with_k_grid(
     for k in sorted(config.k_values):
         logger.info(f"Running patching with k={k}...")
 
-        causal_feature_indices = all_causal_features[:k]
+        causal_feature_indices = source_features[:k]
 
-        # Extract clean patch vectors for these features
-        source_patch_vectors, _ = extract_source_patch_vectors(
+        # Extract clean activation tensors for these features
+        source_activations, _ = extract_activations(
             pipe,
             sae,
             source_prompt,
@@ -653,13 +711,13 @@ def run_experiment_with_k_grid(
         )
 
         # Run patched generation
-        hook_fn = create_patching_hook(
-            source_patch_vectors,
+        hook_fn = create_standard_hook(
+            source_activations,
             sae,
             config.patching_timestep_indices,
             config.patching_method,
-            config.patch_scale,
-            config.reconstruct_scale,
+            config.add_scale,
+            config.subtract_scale,
             "patched",
         )
 
@@ -694,6 +752,230 @@ def run_experiment_with_k_grid(
     )
 
     logger.info(f"Results saved to: {base_save_dir}")
+    return base_save_dir
+
+
+def run_union_mode(
+    source_prompt: str,
+    control_prompt: str,
+    config: ActivationPatchingConfig,
+    pipe: HookedStableDiffusionPipeline,
+    sae: TopKSAE,
+    hook_name: str,
+    height: int = 512,
+    width: int = 512,
+) -> Path:
+    """
+    Add most relevant features of prompt 1 and subtract most relevant features
+    of prompt 2.
+
+    Args:
+        source_prompt (str): The prompt for the source image.
+        control_prompt (str): The prompt for the control image.
+        config (ActivationPatchingConfig): The configuration for activation
+            patching.
+        pipe (HookedStableDiffusionPipeline): The diffusion pipeline.
+        sae (TopKSAE): The top-k spatial attention extractor.
+        hook_name (str): The name of the hook to use.
+        height (int, optional): The height of the generated images. Defaults
+            to 512.
+        width (int, optional): The width of the generated images. Defaults
+            to 512.
+    """
+    set_all_seeds(config.seed)
+
+    # Create directory
+    block_name = hook_name.replace("unet.", "").replace(".", "_")
+    words = (
+        source_prompt.lower().replace(",", "").replace(".", "").split()[:10]
+    )
+    prompt_slug = "_".join(words)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    base_save_dir = (
+        Path(config.output_dir)
+        / block_name
+        / Path(config.experiment_mode)
+        / prompt_slug
+        / timestamp
+    )
+    base_save_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(base_save_dir / "config.json", "w") as f:
+        json.dump(config.to_dict(), f, indent=4)
+
+    # Generate baseline images
+    generator = torch.Generator(config.device).manual_seed(config.seed)
+    source_img = pipe(
+        prompt=source_prompt,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale=config.guidance_scale,
+        generator=generator,
+        height=height,
+        width=width,
+    ).images[0]
+    source_img.save(base_save_dir / "source_original.png")
+
+    generator = torch.Generator(config.device).manual_seed(config.seed)
+    control_img = pipe(
+        prompt=control_prompt,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale=config.guidance_scale,
+        generator=generator,
+        height=height,
+        width=width,
+    ).images[0]
+    control_img.save(base_save_dir / "control_original.png")
+
+    # Find features
+    max_k = max(config.k_values)
+    logger.info("Finding top-k features for union mode...")
+    source_features, control_features = find_top_k_features(
+        pipe,
+        sae,
+        source_prompt,
+        control_prompt,
+        config.patching_timestep_indices,
+        max_k,
+        config,
+        hook_name,
+        config.height,
+        config.width,
+    )
+
+    results = {
+        "source_to_control": {
+            "control_img": control_img,
+            "source_img": source_img,
+            "k_results": {},
+        },
+        "control_to_source": {
+            "source_img": control_img,
+            "control_img": source_img,
+            "k_results": {},
+        },
+    }
+
+    feature_counts = {}
+
+    for k in sorted(config.k_values):
+        # Get union
+        source_set = set(source_features[:k])
+        control_set = set(control_features[:k])
+        union_features = list(source_set | control_set)
+
+        # Track statistics
+        source_only = source_set - control_set
+        assert len(source_only) == k
+        control_only = control_set - source_set
+        shared = source_set & control_set
+
+        feature_counts[k] = {
+            "total": len(union_features),
+            "shared": len(shared),
+            "source_only": len(source_only),
+            "control_only": len(control_only),
+        }
+
+        # Extract vectors for union
+        # Inefficient af, but works.
+        source_vectors, source_img = extract_activations(
+            pipe,
+            sae,
+            source_prompt,
+            union_features,
+            config.patching_timestep_indices,
+            config,
+            hook_name,
+            height,
+            width,
+        )
+        control_vectors, control_img = extract_activations(
+            pipe,
+            sae,
+            control_prompt,
+            union_features,
+            config.patching_timestep_indices,
+            config,
+            hook_name,
+            height,
+            width,
+        )
+
+        # Source -> Control
+        hook_fn = create_union_hook(
+            source_vectors,
+            control_vectors,
+            config.patching_timestep_indices,
+            config.add_scale,
+            config.subtract_scale,
+        )
+
+        generator = torch.Generator(config.device).manual_seed(config.seed)
+        patched_img = pipe.run_with_hooks(
+            prompt=control_prompt,
+            position_hook_dict={hook_name: hook_fn},
+            num_inference_steps=config.num_inference_steps,
+            guidance_scale=config.guidance_scale,
+            generator=generator,
+            height=height,
+            width=width,
+        )[0]
+
+        src_to_ctrl_dir = base_save_dir / "source_to_control"
+        src_to_ctrl_dir.mkdir(exist_ok=True)
+        patched_img.save(src_to_ctrl_dir / f"k_{2*k}.png")
+        results["source_to_control"]["k_results"][2 * k] = patched_img
+
+        # Control -> Source
+        hook_fn = create_union_hook(
+            control_vectors,
+            source_vectors,
+            config.patching_timestep_indices,
+            config.add_scale,
+            config.subtract_scale,
+        )
+
+        generator = torch.Generator(config.device).manual_seed(config.seed)
+        patched_img = pipe.run_with_hooks(
+            prompt=source_prompt,
+            position_hook_dict={hook_name: hook_fn},
+            num_inference_steps=config.num_inference_steps,
+            guidance_scale=config.guidance_scale,
+            generator=generator,
+            height=height,
+            width=width,
+        )[0]
+
+        ctrl_to_src_dir = base_save_dir / "control_to_source"
+        ctrl_to_src_dir.mkdir(exist_ok=True)
+        patched_img.save(ctrl_to_src_dir / f"k_{2*k}.png")
+        results["control_to_source"]["k_results"][2 * k] = patched_img
+
+        # Save feature info
+        with open(base_save_dir / f"features_k_{k}.txt", "w") as f:
+            f.write(f"Total features: {len(union_features)}\n")
+            f.write(f"Source-only features: {sorted(source_only)}\n")
+            f.write(f"Control-only features: {sorted(control_only)}\n")
+            f.write(f"Shared features: {sorted(shared)}\n")
+
+    # Source to Control:
+    create_paper_figure(
+        results["source_to_control"],
+        [2 * k for k in config.k_values],
+        base_save_dir / "source_to_control",
+        config.figure_dpi,
+    )
+
+    # Control to Source:
+    create_paper_figure(
+        results["control_to_source"],
+        [2 * k for k in config.k_values],
+        base_save_dir / "control_to_source",
+        config.figure_dpi,
+    )
+
+    logger.info(f"Union results saved to: {base_save_dir}")
     return base_save_dir
 
 
