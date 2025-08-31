@@ -156,8 +156,8 @@ class ActivationPatchingConfig(Serializable):
     patching_method: Literal["replace", "ablate_and_replace"] = "replace"
     """Patching method: 'replace' or 'ablate_and_replace'."""
 
-    experiment_mode: Literal["standard", "union"] = "union"
-    """Experiment mode: standard (only one direction) or union."""
+    experiment_mode: Literal["standard", "bidirectional"] = "bidirectional"
+    """Experiment mode: standard (only one direction) or bidirectional."""
 
     k_values: List[int] = field(default_factory=lambda: [1, 5, 20, 50, 200])
     """Grid of k values (number of top features to patch)."""
@@ -238,7 +238,7 @@ def main():
                     width=config.width,
                 )
             else:
-                run_union_mode(
+                run_bidirectional_mode(
                     source_prompt,
                     control_prompt,
                     config,
@@ -528,7 +528,7 @@ def create_standard_hook(
     return hook_fn
 
 
-def create_union_hook(
+def create_bidirectional_hook(
     add_vectors: Dict[int, torch.Tensor],
     subtract_vectors: Dict[int, torch.Tensor],
     timestep_indices: List[int],
@@ -755,7 +755,7 @@ def run_experiment_with_k_grid(
     return base_save_dir
 
 
-def run_union_mode(
+def run_bidirectional_mode(
     source_prompt: str,
     control_prompt: str,
     config: ActivationPatchingConfig,
@@ -829,7 +829,7 @@ def run_union_mode(
 
     # Find features
     max_k = max(config.k_values)
-    logger.info("Finding top-k features for union mode...")
+    logger.info("Finding top-k features for bidirectional mode...")
     source_features, control_features = find_top_k_features(
         pipe,
         sae,
@@ -859,10 +859,10 @@ def run_union_mode(
     feature_counts = {}
 
     for k in sorted(config.k_values):
-        # Get union
+        # Get bidirectional
         source_set = set(source_features[:k])
         control_set = set(control_features[:k])
-        union_features = list(source_set | control_set)
+        bidirectional_features = list(source_set | control_set)
 
         # Track statistics
         source_only = source_set - control_set
@@ -871,19 +871,19 @@ def run_union_mode(
         shared = source_set & control_set
 
         feature_counts[k] = {
-            "total": len(union_features),
+            "total": len(bidirectional_features),
             "shared": len(shared),
             "source_only": len(source_only),
             "control_only": len(control_only),
         }
 
-        # Extract vectors for union
+        # Extract vectors for bidirectional
         # Inefficient af, but works.
         source_vectors, source_img = extract_activations(
             pipe,
             sae,
             source_prompt,
-            union_features,
+            bidirectional_features,
             config.patching_timestep_indices,
             config,
             hook_name,
@@ -894,7 +894,7 @@ def run_union_mode(
             pipe,
             sae,
             control_prompt,
-            union_features,
+            bidirectional_features,
             config.patching_timestep_indices,
             config,
             hook_name,
@@ -903,7 +903,7 @@ def run_union_mode(
         )
 
         # Source -> Control
-        hook_fn = create_union_hook(
+        hook_fn = create_bidirectional_hook(
             source_vectors,
             control_vectors,
             config.patching_timestep_indices,
@@ -928,7 +928,7 @@ def run_union_mode(
         results["source_to_control"]["k_results"][2 * k] = patched_img
 
         # Control -> Source
-        hook_fn = create_union_hook(
+        hook_fn = create_bidirectional_hook(
             control_vectors,
             source_vectors,
             config.patching_timestep_indices,
@@ -954,7 +954,7 @@ def run_union_mode(
 
         # Save feature info
         with open(base_save_dir / f"features_k_{k}.txt", "w") as f:
-            f.write(f"Total features: {len(union_features)}\n")
+            f.write(f"Total features: {len(bidirectional_features)}\n")
             f.write(f"Source-only features: {sorted(source_only)}\n")
             f.write(f"Control-only features: {sorted(control_only)}\n")
             f.write(f"Shared features: {sorted(shared)}\n")
@@ -975,8 +975,13 @@ def run_union_mode(
         config.figure_dpi,
     )
 
-    logger.info(f"Union results saved to: {base_save_dir}")
+    logger.info(f"bidirectional results saved to: {base_save_dir}")
     return base_save_dir
+
+
+# =========================================================================== #
+#                        Plotting Functions                                   #
+# =========================================================================== #
 
 
 def create_paper_figure(
