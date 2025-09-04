@@ -43,10 +43,7 @@ class DatasetConfig:
     styles: List[str] = field(
         default_factory=lambda: [
             "photorealistic image",
-            "oil painting",
-            "watercolor painting",
             "digital art image",
-            "sketch",
             "close up image",
             "portrait image",
             "highly detailed image",
@@ -74,7 +71,6 @@ class DatasetConfig:
             "in side view",
             "at rest",
             "sitting still",
-            "eating",
             "resting",
             "sleeping",
         ]
@@ -144,7 +140,7 @@ def main():
         help="Number of training examples.",
     )
     parser.add_argument(
-        "--test_size", type=int, default=50, help="Number of test examples."
+        "--test_size", type=int, default=100, help="Number of test examples."
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility."
@@ -218,7 +214,13 @@ class PromptGenerator:
         combinations = list(itertools.product(*attributes))
         logger.info(f"Created {len(combinations)} attribute combinations.")
 
-        for style, color, action in combinations:
+        # Shuffle combinations to randomize direction assignment
+        random.shuffle(combinations)
+
+        # Determine the exact midpoint for a 50/50 split
+        split_point = len(combinations) // 2
+
+        for i, (style, color, action) in enumerate(combinations):
             prompt_a_text = self._format_prompt(
                 self.config.object_a, style, color, action
             )
@@ -229,14 +231,30 @@ class PromptGenerator:
             shared_attrs = {"style": style, "color": color, "action": action}
 
             # -----------------------------------------------------------------
-            # Comparative Pairs
+            # Comparative Pairs (with guaranteed 50/50 balance)
             # -----------------------------------------------------------------
+
+            # The first half of the shuffled list becomes A -> B
+            if i < split_point:
+                clean_prompt, patch_prompt = prompt_a_text, prompt_b_text
+                clean_answer, patch_answer = (
+                    self.config.object_a,
+                    self.config.object_b,
+                )
+            # The second half of the shuffled list becomes B -> A
+            else:
+                clean_prompt, patch_prompt = prompt_b_text, prompt_a_text
+                clean_answer, patch_answer = (
+                    self.config.object_b,
+                    self.config.object_a,
+                )
+
             self.comparative_pairs.append(
                 {
-                    "clean_prompt": prompt_a_text,
-                    "patch_prompt": prompt_b_text,
-                    "clean_answer": self.config.object_a,
-                    "patch_answer": self.config.object_b,
+                    "clean_prompt": clean_prompt,
+                    "patch_prompt": patch_prompt,
+                    "clean_answer": clean_answer,
+                    "patch_answer": patch_answer,
                     "shared_attributes": shared_attrs,
                 }
             )
@@ -261,6 +279,22 @@ class PromptGenerator:
                     "attributes": shared_attrs,
                 }
             )
+
+        # Log the balance for confirmation
+        a_to_b_count = sum(
+            1
+            for p in self.comparative_pairs
+            if p["clean_answer"] == self.config.object_a
+        )
+        b_to_a_count = sum(
+            1
+            for p in self.comparative_pairs
+            if p["clean_answer"] == self.config.object_b
+        )
+        logger.info(
+            f"Comparative pairs created with balance: "
+            f"{a_to_b_count} (A->B) and {b_to_a_count} (B->A)."
+        )
 
         return self
 
@@ -357,7 +391,7 @@ class DatasetBuilder:
             )
         logger.info(f"Saved JSON version to: {json_path}")
 
-        logger.info("Example prompt:", train_split[0])
+        logger.info("Example prompts:", train_split[0])
 
 
 if __name__ == "__main__":
