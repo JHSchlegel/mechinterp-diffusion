@@ -321,8 +321,12 @@ def get_topk_component_indices(sparse_act: SparseAct, k: int) -> List[int]:
     """ """
     # Concatenates [features; residuals]
     effects_tensor = sparse_act.to_tensor()
-    # Aggregate over batch, height, and width to find feature importance
-    feature_importance = effects_tensor.abs().mean(dim=(0, 1, 2))
+    # Average over all dimensions except the last (feature dimension)
+    if effects_tensor.ndim > 1:
+        dims_to_mean = tuple(range(effects_tensor.ndim - 1))
+        feature_importance = effects_tensor.abs().mean(dim=dims_to_mean)
+    else:
+        feature_importance = effects_tensor.abs()
     # Find the indices of the top-k most important features
     _, topk_feature_indices = torch.topk(feature_importance, k)
     return topk_feature_indices.tolist()
