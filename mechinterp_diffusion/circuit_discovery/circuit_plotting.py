@@ -296,8 +296,16 @@ def _plot_hierarchical_circuit(
                 constraint="false",
             )
 
+    # if sorted_timesteps and "y" in filtered_nodes:
+    #     last_node_name = f"t{sorted_timesteps[-1]}_f{sorted_features[0]}"
+    #     dot.edge(last_node_name, "probe_node", style="invis", weight="10000")
+
     if sorted_timesteps and "y" in filtered_nodes:
-        last_node_name = f"t{sorted_timesteps[-1]}_f{sorted_features[0]}"
+        # Connect to middle feature for vertical centering
+        middle_feat_idx = len(sorted_features) // 2
+        last_node_name = (
+            f"t{sorted_timesteps[-1]}_f{sorted_features[middle_feat_idx]}"
+        )
         dot.edge(last_node_name, "probe_node", style="invis", weight="10000")
 
     output_dir = os.path.dirname(save_path)
