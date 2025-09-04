@@ -1,138 +1,161 @@
 """
-Module for visualizing causal circuits in diffusion models.
+This module provides functions to plot causal circuits previously discovered
+using circuit_discovery.py.
 """
 
 # =========================================================================== #
-#                              Packages and Presets                           #
+#                             Packages and Presets                            #
 # =========================================================================== #
-
 import io
 import logging
 import os
-from typing import Dict, List, Tuple
+from collections import defaultdict
+from typing import Dict, List, Tuple, Union
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import torch
 from activation_utils import SparseAct
+from circuit_utils import (
+    get_topk_component_indices,
+)
 from graphviz import Digraph
 
 logger = logging.getLogger(__name__)
 
-# Constants for visualization
-NODE_SIZE_MIN = 0.3
-NODE_SIZE_MAX = 1.5
-EDGE_WIDTH_MIN = 0.5
-EDGE_WIDTH_MAX = 3.0
-FONT_SIZE = 10
-TITLE_FONT_SIZE = 14
-
-
-# TODO: Add metric as final node
-
 
 # =========================================================================== #
-#                             Main Plotting Function                          #
+#                        Causal Circuit Plotting                             #
 # =========================================================================== #
+
+
 def plot_causal_circuit(
-    nodes: Dict[int, SparseAct],
-    edges: Dict[Tuple[int, int], Dict],
+    nodes: Dict[Union[int, str], Union[SparseAct, float]],
+    edges: Dict[Tuple[int, Union[int, str]], torch.Tensor],
     timesteps: List[int],
     save_path: str,
-    node_threshold: float = 1e-3,
-    edge_threshold: float = 1e-4,
-    top_k_nodes: int = 20,
+    top_k_nodes_per_ts: int = 10,
     top_k_edges: int = 50,
     num_inference_steps: int = 25,
 ) -> None:
     """
-    Plot the causal circuit showing nodes and edges (temporal dependencies).
+    Filters and plots the causal circuit from aggregated node and edge data.
+
 
     Args:
-        nodes (Dict[int, SparseAct]): Dictionary mapping timestep ->
-            SparseAct of feature effects
-        edges (Dict[Tuple[int, int], Dict]): Dictionary mapping
-            (t_early, t_late) -> edge information
-        timesteps (List[int]): List of timestep indices
-        save_path (str): Path to save the plot
-        node_threshold (float, optional): Minimum effect for including a node.
-            Defaults to 1e-3.
-        edge_threshold (float, optional): Minimum weight for including an edge.
-            Defaults to 1e-4.
-        top_k_nodes (int, optional): Maximum nodes per timestep to show.
-            Defaults to 20.
-        top_k_edges (int, optional): Maximum total edges to show. Defaults
-            to 50.
+        nodes (Dict[Union[int, str], Union[SparseAct, float]]): A dictionary
+            mapping timesteps (int) or "y" to SparseAct objects (for timesteps
+            with associated activations) or floats
+            (for "y" with a scalar value).
+        edges (Dict[Tuple[int, Union[int, str]], torch.Tensor]): A dictionary
+            mapping (t_up, t_down) tuples to edge tensors. Edge tensors can be
+            either sparse COO tensors (for JVPs between features) or dense
+            tensors (for edges to the probe).
+        timesteps (List[int]): List of timesteps to consider.
+        save_path (str): Path to save the plot.
+        top_k_nodes_per_ts (int, optional): Number of top nodes to keep per
+            timestep. Defaults to 10.
+        top_k_edges (int, optional): Number of top edges to keep overall.
+            Defaults to 50.
         num_inference_steps (int, optional): Number of diffusion timesteps.
             Defaults to 25.
     """
+    # Filter to get the top-k most important nodes per timestep
+    filtered_nodes = defaultdict(list)
+    node_effects = {}
+    all_timesteps = sorted([t for t in timesteps if isinstance(t, int)])
 
-    # ilter and select important nodes
-    filtered_nodes = {}
-    node_effects = {}  # Store effect magnitudes for sizing
-
-    for t_idx in timesteps:
-        if t_idx not in nodes:
+    for t_idx in all_timesteps:
+        if t_idx not in nodes or not isinstance(nodes[t_idx], SparseAct):
             continue
-
         sparse_act = nodes[t_idx]
-        feature_effects = sparse_act.act
 
-        # Handle different tensor shapes
-        if feature_effects.ndim > 1:
-            feature_effects = feature_effects.mean(
-                dim=tuple(range(feature_effects.ndim - 1))
-            )
+        top_indices = get_topk_component_indices(
+            sparse_act, top_k_nodes_per_ts
+        )
 
-        abs_effects = feature_effects.abs()
-        signed_effects = feature_effects
+        # Get the effects tensor for storing magnitudes
+        effects_tensor = sparse_act.to_tensor().mean(
+            dim=tuple(range(sparse_act.act.ndim - 1))
+        )
+        num_features = sparse_act.act.shape[-1]
+        for idx in top_indices:
+            feature_id = "res" if idx >= num_features else idx
+            filtered_nodes[t_idx].append(feature_id)
+            node_effects[(t_idx, feature_id)] = effects_tensor[idx].item()
 
-        # Get top-k features above threshold
-        mask = abs_effects > node_threshold
-        active_indices = torch.where(mask)[0]
+    if "y" in nodes:
+        filtered_nodes["y"] = ["probe"]
+        node_effects[("y", "probe")] = nodes["y"]
 
-        if len(active_indices) > top_k_nodes:
-            top_vals, top_indices = torch.topk(abs_effects, top_k_nodes)
-            active_indices = top_indices[top_vals > node_threshold]
+    # Find all edges that connect the filtered nodes
+    all_valid_edges = []
+    num_features_per_ts = {
+        t: nodes[t].act.shape[-1]
+        for t in all_timesteps
+        if t in nodes and hasattr(nodes[t], "act")
+    }
 
-        filtered_nodes[t_idx] = []
-        for feat_idx in active_indices.tolist():
-            effect = signed_effects[feat_idx].item()
-            filtered_nodes[t_idx].append(feat_idx)
-            node_effects[(t_idx, feat_idx)] = effect
+    for (t_up, t_down), edge_tensor in edges.items():
+        # Handle sparse JVP tensors (feature x feature)
+        if (
+            isinstance(edge_tensor, torch.Tensor)
+            and edge_tensor.is_sparse
+            and edge_tensor._nnz() > 0
+        ):
+            coalesced = edge_tensor.coalesce()
+            down_indices, up_indices = coalesced.indices()
+            values = coalesced.values()
 
-    # Step 2: Filter edges based on importance
-    filtered_edges = []
-
-    for (t_early, t_late), edge_info in edges.items():
-        weight_matrix = edge_info["weight_matrix"]
-        early_features = edge_info["early_features"]
-        late_features = edge_info["late_features"]
-
-        # Find significant edges
-        for i, early_feat in enumerate(early_features.tolist()):
-            if early_feat not in filtered_nodes.get(t_early, []):
+            if (
+                t_up not in num_features_per_ts
+                or t_down not in num_features_per_ts
+            ):
                 continue
+            f_up_count = num_features_per_ts[t_up]
+            f_down_count = num_features_per_ts[t_down]
 
-            for j, late_feat in enumerate(late_features.tolist()):
-                if late_feat not in filtered_nodes.get(t_late, []):
-                    continue
+            for i in range(len(values)):
+                up_feat_idx, down_feat_idx = (
+                    up_indices[i].item(),
+                    down_indices[i].item(),
+                )
+                up_feat = "res" if up_feat_idx >= f_up_count else up_feat_idx
+                down_feat = (
+                    "res" if down_feat_idx >= f_down_count else down_feat_idx
+                )
 
-                weight = abs(weight_matrix[j, i].item())
-                if weight > edge_threshold:
-                    filtered_edges.append(
-                        ((t_early, early_feat), (t_late, late_feat), weight)
+                if up_feat in filtered_nodes.get(
+                    t_up, []
+                ) and down_feat in filtered_nodes.get(t_down, []):
+                    all_valid_edges.append(
+                        (
+                            (t_up, up_feat),
+                            (t_down, down_feat),
+                            values[i].item(),
+                        )
                     )
 
-    # Sort and limit edges
-    filtered_edges.sort(key=lambda x: x[2], reverse=True)
-    if len(filtered_edges) > top_k_edges:
-        logger.info(
-            f"Limiting edges from {len(filtered_edges)} to {top_k_edges}"
-        )
-        filtered_edges = filtered_edges[:top_k_edges]
+        # Handle dense tensors (edges to probe)
+        elif (
+            isinstance(edge_tensor, torch.Tensor) and not edge_tensor.is_sparse
+        ):
+            if t_down == "y":
+                if t_up not in num_features_per_ts:
+                    continue
+                f_up_count = num_features_per_ts[t_up]
 
-    # Create the graph
+                for up_idx, weight in enumerate(edge_tensor.tolist()):
+                    up_feat = "res" if up_idx >= f_up_count else up_idx
+                    if up_feat in filtered_nodes.get(t_up, []):
+                        all_valid_edges.append(
+                            ((t_up, up_feat), ("y", "probe"), weight)
+                        )
+
+    # Apply a single, global top-k filter to the valid edges
+    all_valid_edges.sort(key=lambda x: abs(x[2]), reverse=True)
+    filtered_edges = all_valid_edges[:top_k_edges]
+
     _plot_hierarchical_circuit(
         filtered_nodes,
         node_effects,
@@ -142,31 +165,26 @@ def plot_causal_circuit(
     )
 
 
-# =========================================================================== #
-#                              Helper Functions                               #
-# =========================================================================== #
 def _plot_hierarchical_circuit(
-    filtered_nodes: Dict[int, List[int]],
-    node_effects: Dict[Tuple[int, int], float],
-    filtered_edges: List[Tuple[Tuple[int, int], Tuple[int, int], float]],
+    filtered_nodes: Dict[Union[int, str], List[Union[int, str]]],
+    node_effects: Dict[Tuple[Union[int, str], Union[int, str]], float],
+    filtered_edges: List[Tuple[Tuple, Tuple, float]],
     save_path: str,
     num_inference_steps: int = 25,
 ) -> None:
-    """Plot the hierarchical causal circuit.
+    """
+    Plots the hierarchical circuit.
 
     Args:
-        filtered_nodes (Dict[int, List[int]]): Nodes exceeding the threshold.
-        node_effects (Dict[Tuple[int, int], float]): Node effect magnitudes.
-        filtered_edges (List[Tuple[Tuple[int, int], Tuple[int, int], float]]):
-            Edges exceeding the threshold.
+        filtered_nodes (Dict[Union[int, str], List[Union[int, str]]]): Nodes to
+            plot.
+        node_effects (Dict[Tuple[Union[int, str], Union[int, str]], float]):
+            Node effect magnitudes.
+        filtered_edges (List[Tuple[Tuple, Tuple, float]]): Edges to plot.
         save_path (str): Path to save the plot.
-        num_inference_steps (int, optional): Number idffuions timestesp.
+        num_inference_steps (int, optional): Number of diffusion timesteps.
             Defaults to 25.
     """
-
-    def convert_timestep_to_diffusion_time(t_idx):
-        return 1.0 - (t_idx / (num_inference_steps - 1))
-
     dot = Digraph(name="Causal Circuit")
     dot.attr(
         rankdir="LR",
@@ -174,7 +192,6 @@ def _plot_hierarchical_circuit(
         nodesep="0.5",
         splines="curved",
         compound="true",
-        concentrate="true",
     )
     dot.node_attr.update(
         shape="circle",
@@ -182,156 +199,116 @@ def _plot_hierarchical_circuit(
         fixedsize="true",
         width="1.2",
         height="1.2",
-        fontname="Helvetica",
-        fontsize="11",
+        fontname="Helvetica-Bold",
+        fontsize="20",
+        # bold:
     )
 
-    sorted_timesteps = sorted(list(filtered_nodes.keys()))
-
-    all_features_set = set(
-        feat for t in sorted_timesteps for feat in filtered_nodes.get(t, [])
+    sorted_timesteps = sorted(
+        [k for k in filtered_nodes.keys() if isinstance(k, int)]
     )
-    sorted_features = sorted(list(all_features_set))
+    all_features_set = set()
+    for t_idx in sorted_timesteps:
+        for feat in filtered_nodes.get(t_idx, []):
+            all_features_set.add(feat)
 
-    # Use absolute max for a symmetrical color scale around zero
+    sorted_features = sorted(
+        list(all_features_set), key=lambda x: (isinstance(x, str), x)
+    )
+    node_effect_values = [v for k, v in node_effects.items() if k[0] != "y"]
     max_abs_effect = (
-        max(abs(v) for v in node_effects.values()) if node_effects else 1.0
+        max(abs(v) for v in node_effect_values) if node_effect_values else 1.0
     )
     norm = mcolors.Normalize(vmin=-max_abs_effect, vmax=max_abs_effect)
-    cmap = plt.get_cmap("RdBu_r")  # Red-White-Blue colormap
+    cmap = plt.get_cmap("RdBu_r")
 
-    # Full grid of nodes (including invisible placeholders)
     for t_idx in sorted_timesteps:
-        for feat_idx in sorted_features:
-            node_name = f"t{t_idx}_f{feat_idx}"
-            if feat_idx in filtered_nodes.get(t_idx, []):
-                effect = node_effects.get((t_idx, feat_idx), 0.0)
-                rgba = cmap(norm(effect))
-                color = mcolors.to_hex(rgba)
-                text_color = (
-                    "#000000" if (0.2 < norm(effect) < 0.8) else "#ffffff"
-                )
-                dot.node(
-                    node_name,
-                    label=f"F{feat_idx}",
-                    fillcolor=color,
-                    fontcolor=text_color,
-                )
-            else:
-                dot.node(node_name, style="invis")
+        label = f"t={1.0 - (t_idx / (num_inference_steps - 1)):.2f}"
+        with dot.subgraph(name=f"cluster_{t_idx}") as cluster:
+            cluster.attr(
+                label=label,
+                style="dashed",
+                color="gray",
+                fontsize="24",
+                fontname="Helvetica-Bold",
+            )
+            for feat_idx in sorted_features:
+                node_name = f"t{t_idx}_f{feat_idx}"
+                if feat_idx in filtered_nodes.get(t_idx, []):
+                    effect = node_effects.get((t_idx, feat_idx), 0.0)
+                    rgba = cmap(norm(effect))
+                    color = mcolors.to_hex(rgba)
+                    text_color = (
+                        "#000000" if (0.2 < norm(effect) < 0.8) else "#ffffff"
+                    )
+                    node_label = "Res" if feat_idx == "res" else f"F{feat_idx}"
+                    shape = "ellipse" if feat_idx == "res" else "circle"
+                    cluster.node(
+                        node_name,
+                        label=node_label,
+                        fillcolor=color,
+                        fontcolor=text_color,
+                        shape=shape,
+                    )
+                else:
+                    cluster.node(node_name, style="invis")
 
-    # Enforce horizontal feature alignment for temporal consistency
     for feat_idx in sorted_features:
         for i in range(len(sorted_timesteps) - 1):
             source_node = f"t{sorted_timesteps[i]}_f{feat_idx}"
             dest_node = f"t{sorted_timesteps[i+1]}_f{feat_idx}"
-            dot.edge(source_node, dest_node, style="invis", weight="1000")
+            dot.edge(source_node, dest_node, style="invis", weight="10000")
 
-    # Draw visible data edges
-    max_edge_weight = (
-        max(e[2] for e in filtered_edges) if filtered_edges else 1.0
-    )
-    min_edge_weight = (
-        min(e[2] for e in filtered_edges) if filtered_edges else 0.0
-    )
-    for (t_early, feat_early), (t_late, feat_late), weight in filtered_edges:
-        source = f"t{t_early}_f{feat_early}"
-        target = f"t{t_late}_f{feat_late}"
-        normalized = (
-            (weight - min_edge_weight) / (max_edge_weight - min_edge_weight)
-            if max_edge_weight > min_edge_weight
-            else 0.5
-        )
-        edge_width = 0.5 + 2.5 * normalized
-        dot.edge(
-            source,
-            target,
-            penwidth=str(edge_width),
-            color="darkblue",
-            constraint="false",
-        )
-
-    # Add decorative cluster boxes
-    for t_idx in sorted_timesteps:
-        diffusion_time = convert_timestep_to_diffusion_time(t_idx)
-        time_label = f"t={diffusion_time:.3f}"
-        with dot.subgraph(name=f"cluster_t{t_idx}") as cluster:
+    if "y" in filtered_nodes:
+        with dot.subgraph(name="cluster_y") as cluster:
             cluster.attr(
-                label=time_label, style="dashed", color="gray", fontsize="16"
+                label="Output",
+                style="dashed",
+                color="gray",
+                fontsize="24",
+                fontname="Helvetica-Bold",
             )
-            for feat_idx in sorted_features:
-                cluster.node(f"t{t_idx}_f{feat_idx}")
+            cluster.node(
+                "probe_node",
+                label="Probe",
+                shape="doublecircle",
+                fillcolor="lightgrey",
+                fontcolor="black",
+            )
 
-    # Render graph and add colorbar
+    if filtered_edges:
+        max_edge_weight = max(abs(e[2]) for e in filtered_edges) or 1.0
+        for up_node, down_node, weight in filtered_edges:
+            source = f"t{up_node[0]}_f{up_node[1]}"
+            target = (
+                "probe_node"
+                if down_node[0] == "y"
+                else f"t{down_node[0]}_f{down_node[1]}"
+            )
+            normalized_weight = abs(weight) / max_edge_weight
+            penwidth = str(0.8 + 3.0 * normalized_weight)
+            color = "darkblue" if weight < 0 else "firebrick"
+            dot.edge(
+                source,
+                target,
+                penwidth=penwidth,
+                color=color,
+                constraint="false",
+            )
+
+    if sorted_timesteps and "y" in filtered_nodes:
+        last_node_name = f"t{sorted_timesteps[-1]}_f{sorted_features[0]}"
+        dot.edge(last_node_name, "probe_node", style="invis", weight="10000")
+
     output_dir = os.path.dirname(save_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
+    os.makedirs(output_dir, exist_ok=True)
     png_data = dot.pipe(format="png")
     img = plt.imread(io.BytesIO(png_data))
-
-    fig, ax = plt.subplots(figsize=(16, 10), dpi=150)
+    fig, ax = plt.subplots(figsize=(20, 28), dpi=300)
     ax.imshow(img)
     ax.axis("off")
 
-    cax = fig.add_axes(
-        [
-            ax.get_position().x1 + 0.01,
-            ax.get_position().y0,
-            0.02,
-            ax.get_position().height,
-        ]
-    )
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cax)
-    cbar.set_label("Feature Effect Magnitude", fontsize=12)
-
     final_save_path = f"{os.path.splitext(save_path)[0]}.png"
     plt.savefig(final_save_path, bbox_inches="tight")
-    plt.savefig(final_save_path.replace(".png", ".pdf"), bbox_inches="tight")
     plt.close(fig)
-
     logger.info(f"Circuit plot saved to {final_save_path}")
-
-
-if __name__ == "__main__":
-    # Example usage with dummy data
-    import numpy as np
-
-    num_timesteps = 10
-    num_features = 50
-
-    dummy_nodes = {
-        t: SparseAct(
-            act=torch.randn(num_features) * (0.5 + 0.5 * np.exp(-t / 5))
-        )  # Decay over time
-        for t in range(num_timesteps)
-    }
-    dummy_edges = {}
-    # Markov chain: only adjacent timesteps
-    for t_early in range(num_timesteps - 1):
-        t_late = t_early + 1  # Only connect to next timestep
-        weight_matrix = torch.randn(10, 10) * 0.1
-        early_features = torch.randint(0, num_features, (10,))
-        late_features = torch.randint(0, num_features, (10,))
-        dummy_edges[(t_early, t_late)] = {
-            "weight_matrix": weight_matrix,
-            "early_features": early_features,
-            "late_features": late_features,
-        }
-
-    # Save to dummy_circuit folder
-    os.makedirs("dummy_circuit", exist_ok=True)
-
-    plot_causal_circuit(
-        nodes=dummy_nodes,
-        edges=dummy_edges,
-        timesteps=list(range(num_timesteps)),
-        save_path="dummy_circuit/circuit.png",
-        node_threshold=0.2,
-        edge_threshold=0.05,
-        top_k_nodes=5,
-        top_k_edges=20,
-        num_inference_steps=num_timesteps,
-    )
