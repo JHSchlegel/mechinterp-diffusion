@@ -91,10 +91,10 @@ class CircuitDiscoveryConfig(Serializable):
     probe_timestep: int = 4
     """Timestep at which to apply the probe."""
 
-    num_prompts: int = 4
+    num_prompts: int = 50
     """Number of prompts to use for circuit discovery."""
 
-    num_seeds: int = 1
+    num_seeds: int = 2
     """Number of random seeds to use for circuit discovery."""
 
     top_k_jvp_nodes: int = 10
@@ -105,7 +105,7 @@ class CircuitDiscoveryConfig(Serializable):
     Method to use for node attribution (gradient or integrated gradients).
     """
 
-    ig_steps: int = 5
+    ig_steps: int = 10
     """Number of steps to use for integrated gradients."""
 
     # -------------------------------------------------------------------------
