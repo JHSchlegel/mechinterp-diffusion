@@ -37,9 +37,17 @@ class DatasetConfig:
     """A dataclass to hold the configuration for a comparative dataset."""
 
     name: str
+    """Dataset name (used for saving)."""
+
     object_a: str
+    """First object in the comparative prompt."""
+
     object_b: str
+    """Second object in the comparative prompt."""
+
     prompt_template: str = "A {style} of a {color} {object} {action}."
+    """Template for generating prompts, with placeholders"""
+
     styles: List[str] = field(
         default_factory=lambda: [
             "photorealistic image",
@@ -53,6 +61,8 @@ class DatasetConfig:
             "realistic image",
         ]
     )
+    """Styles to vary in the prompts."""
+
     colors: List[str] = field(
         default_factory=lambda: [
             "white",
@@ -64,6 +74,9 @@ class DatasetConfig:
             "black and white",
         ]
     )
+
+    """Colors to vary in the prompts."""
+
     actions: List[str] = field(
         default_factory=lambda: [
             "in profile",
@@ -75,6 +88,7 @@ class DatasetConfig:
             "sleeping",
         ]
     )
+    """Actions to vary in the prompts."""
 
 
 # -----------------------------------------------------------------------------
