@@ -17,7 +17,7 @@ from simple_parsing import Serializable, parse
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from circuit_plotting import plot_causal_circuit
+from circuit_plotting import plot_causal_circuit, plot_node_edge_distributions
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -47,6 +47,9 @@ class PlottingConfig(Serializable):
     top_k_edges: int = 20
     """Total number of top edges to display in the plot."""
 
+    num_inference_steps: int = 25
+    """Number of diffusion inference steps (used for distribution plots)."""
+
     def __post_init__(self):
         Path(self.output_dir).mkdir(exist_ok=True)
 
@@ -60,7 +63,9 @@ if __name__ == "__main__":
     logger.info(f"Running with configuration:\n{config.dumps_yaml()}")
 
     circuit_name = Path(config.circuit_path).stem
-    save_path = os.path.join(config.output_dir, f"{circuit_name}_plot.png")
+    circuit_save_path = os.path.join(
+        config.output_dir, f"{circuit_name}_plot.png"
+    )
 
     if not os.path.exists(config.circuit_path):
         logger.error(f"Circuit file not found at: {config.circuit_path}")
@@ -75,8 +80,6 @@ if __name__ == "__main__":
     metadata_config = circuit_data.get("config", {})
 
     logger.info("Circuit data loaded successfully.")
-
-    logger.info(f"Generating plot and saving to {save_path}...")
 
     # Extract timesteps from metadata for plotting
     timesteps_analyzed = metadata_config.get("timesteps", [])
@@ -97,10 +100,18 @@ if __name__ == "__main__":
         nodes=nodes,
         edges=edges,
         timesteps=timesteps_analyzed,
-        save_path=save_path,
+        save_path=circuit_save_path,
         top_k_nodes_per_ts=config.top_k_nodes,
         top_k_edges=config.top_k_edges,
         num_inference_steps=metadata_config.get("num_inference_steps", "N/A"),
     )
 
     logger.info("Plot saved successfully.")
+
+    dist_plot_path = Path(config.output_dir) / "circuit_distributions.png"
+    plot_node_edge_distributions(
+        nodes=nodes,
+        edges=edges,
+        num_inference_steps=config.num_inference_steps,
+        base_save_path=dist_plot_path,
+    )
