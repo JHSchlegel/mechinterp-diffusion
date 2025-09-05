@@ -324,6 +324,7 @@ def get_topk_component_indices(sparse_act: SparseAct, k: int) -> List[int]:
     # Average over all dimensions except the last (feature dimension)
     if effects_tensor.ndim > 1:
         dims_to_mean = tuple(range(effects_tensor.ndim - 1))
+        # abs first to avoid cancellation
         feature_importance = effects_tensor.abs().mean(dim=dims_to_mean)
     else:
         feature_importance = effects_tensor.abs()
