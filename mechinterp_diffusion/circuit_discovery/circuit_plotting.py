@@ -10,10 +10,12 @@ import io
 import logging
 import os
 from collections import defaultdict
-from typing import Dict, List, Tuple, Union
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Tuple, Union
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from activation_utils import SparseAct
 from circuit_utils import (
@@ -190,7 +192,7 @@ def _plot_hierarchical_circuit(
         rankdir="LR",
         ranksep="4.0",
         nodesep="0.5",
-        splines="curved",
+        splines="ortho",  # "curved",
         compound="true",
     )
     dot.node_attr.update(
@@ -215,10 +217,22 @@ def _plot_hierarchical_circuit(
     sorted_features = sorted(
         list(all_features_set), key=lambda x: (isinstance(x, str), x)
     )
+    # node_effect_values = [v for k, v in node_effects.items() if k[0] != "y"]
+    # max_abs_effect = (
+    #     max(abs(v) for v in node_effect_values) if node_effect_values else
+    # 1.0
+    # )
+    # norm = mcolors.Normalize(vmin=-max_abs_effect, vmax=max_abs_effect)
     node_effect_values = [v for k, v in node_effects.items() if k[0] != "y"]
-    max_abs_effect = (
-        max(abs(v) for v in node_effect_values) if node_effect_values else 1.0
-    )
+    if node_effect_values:
+        # Calculate the 95th percentile of the absolute effects to cap the
+        # color scale
+        cap_value = np.percentile([abs(v) for v in node_effect_values], 95)
+        # Use the cap_value, ensuring it's not zero to avoid division errors
+        max_abs_effect = cap_value if cap_value > 0 else 1.0
+    else:
+        max_abs_effect = 1.0
+
     norm = mcolors.Normalize(vmin=-max_abs_effect, vmax=max_abs_effect)
     cmap = plt.get_cmap("RdBu_r")
 
@@ -262,7 +276,7 @@ def _plot_hierarchical_circuit(
     if "y" in filtered_nodes:
         with dot.subgraph(name="cluster_y") as cluster:
             cluster.attr(
-                label="Output",
+                label="",  # label,
                 style="dashed",
                 color="gray",
                 fontsize="24",
@@ -320,3 +334,228 @@ def _plot_hierarchical_circuit(
     plt.savefig(final_save_path, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Circuit plot saved to {final_save_path}")
+
+
+# =========================================================================== #
+#                           Edge and Node Stats                               #
+# =========================================================================== #
+
+
+def _setup_plot_style() -> None:
+    """
+    Sets a professional style for Matplotlib plots.
+    """
+    plt.style.use("seaborn-v0_8-whitegrid")
+    plt.rcParams.update(
+        {
+            # "font.family": "serif",
+            # "font.serif": ["Times New Roman"],
+            "font.size": 20,
+            "axes.labelsize": 20,
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 18,
+            "ytick.labelsize": 18,
+            "legend.fontsize": 18,
+            "axes.titlesize": 22,
+            "axes.titleweight": "bold",
+            "figure.dpi": 300,
+        }
+    )
+
+
+def _create_single_boxplot(
+    ax: plt.Axes,
+    data: List[np.ndarray],
+    labels: List[str],
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    color: str,
+) -> None:
+    """
+    Helper function to create and style a single boxplot on a given axis.
+
+    Args:
+        ax (plt.Axes): The axis to plot on.
+        data (List[np.ndarray]): List of data arrays for each box.
+        labels (List[str]): Labels for each box.
+        title (str): Title of the plot.
+        xlabel (str): Label for the x-axis.
+        ylabel (str): Label for the y-axis.
+        color (str): Color for the boxes.
+    """
+    boxprops = dict(
+        facecolor=color, alpha=0.8, edgecolor="black", linewidth=1.5
+    )
+    medianprops = dict(color="black", linewidth=2.5)
+    whiskerprops = dict(color="black", linewidth=1.5)
+    capprops = dict(color="black", linewidth=1.5)
+    flierprops = dict(
+        marker="o",
+        markerfacecolor="black",
+        markersize=4,
+        linestyle="none",
+        alpha=0.8,
+        markeredgecolor="none",
+    )
+
+    ax.boxplot(
+        data,
+        labels=labels,
+        patch_artist=True,
+        boxprops=boxprops,
+        medianprops=medianprops,
+        whiskerprops=whiskerprops,
+        capprops=capprops,
+        flierprops=flierprops,
+    )
+
+    if title:
+        ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_yscale("log")
+
+    # Only draw the major grid lines (at powers of 10)
+    ax.grid(
+        True,
+        which="major",
+        linestyle="--",
+        linewidth=0.7,
+        color="grey",
+        alpha=0.5,
+    )
+
+    ax.spines[["top", "right"]].set_visible(False)
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+
+
+def plot_node_edge_distributions(
+    nodes: Dict[Any, "SparseAct"],
+    edges: Dict[Any, torch.Tensor],
+    num_inference_steps: int,
+    base_save_path: Path,
+    output_modes: List[
+        Literal["combined", "nodes_only", "edges_only"]
+    ] = [  # noqa:B006
+        "combined",
+        "nodes_only",
+        "edges_only",
+    ],
+) -> None:
+    """
+    Creates and saves beautiful, paper-ready boxplots for node and edge
+    effect distributions. Generates multiple files as specified.
+
+    Args:
+        nodes (Dict[Any, SparseAct]): Dictionary mapping timesteps to
+            SparseAct objects.
+        edges (Dict[Any, torch.Tensor]): Dictionary mapping (t_up, t_down)
+            tuples to edge tensors.
+        num_inference_steps (int): Number of diffusion inference steps.
+        base_save_path (Path): Base path to save the plots. Different suffixe
+            will be added based on the plot type.
+        output_modes (List[Literal["combined", "nodes_only", "edges_only"]],
+            optional): List of plot types to generate. Defaults to all three.
+    """
+    _setup_plot_style()
+    NODE_COLOR = "#4682B4"  # Steel Blue
+    EDGE_COLOR = "#B22222"  # Firebrick
+
+    # Process Node Data
+    node_data = {}
+    for t, sparse_act in nodes.items():
+        if not isinstance(t, int):
+            continue
+        values = sparse_act.to_tensor().abs().flatten().cpu().numpy()
+        values = values[values > 1e-12]
+        if len(values) > 0:
+            diffusion_time = 1.0 - (t / (num_inference_steps - 1))
+            node_data[diffusion_time] = values
+
+    sorted_node_times = sorted(node_data.keys(), reverse=True)
+    node_plot_data = [node_data[t] for t in sorted_node_times]
+    node_labels = [f"{t:.2f}" for t in sorted_node_times]
+
+    # Process Edge Data
+    edge_data = {}
+    for (t_up, t_down), tensor in edges.items():
+        if not isinstance(t_down, int):
+            continue
+        values = tensor.coalesce().values().abs().cpu().numpy()
+        values = values[values > 1e-9]
+        if len(values) > 0:
+            dt_up = 1.0 - (t_up / (num_inference_steps - 1))
+            dt_down = 1.0 - (t_down / (num_inference_steps - 1))
+            label = f"{dt_up:.2f}→{dt_down:.2f}"
+            edge_data[label] = values
+
+    # Sort labels
+    sorted_edge_labels = sorted(edge_data.keys(), reverse=True)
+    edge_plot_data = [edge_data[label] for label in sorted_edge_labels]
+
+    if "combined" in output_modes:
+        fig, axes = plt.subplots(1, 2, figsize=(22, 9), sharey=True)
+        _create_single_boxplot(
+            axes[0],
+            node_plot_data,
+            node_labels,
+            "Node Effect Distribution",
+            "Diffusion Time (t)",
+            "Absolute Effect Magnitude (log scale)",
+            NODE_COLOR,
+        )
+        _create_single_boxplot(
+            axes[1],
+            edge_plot_data,
+            sorted_edge_labels,
+            "Edge Effect Distribution",
+            "Diffusion Time Transition ($t \\rightarrow t - \\Delta t$)",
+            "",
+            EDGE_COLOR,
+        )
+        fig.tight_layout(pad=2.5)
+        save_path = base_save_path.with_name(
+            f"{base_save_path.stem}_combined"
+        ).with_suffix(base_save_path.suffix)
+        fig.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Saved combined distribution plot to {save_path}")
+
+    if "nodes_only" in output_modes:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 9))
+        _create_single_boxplot(
+            ax,
+            node_plot_data,
+            node_labels,
+            "",
+            "Diffusion Time (t)",
+            "Absolute Effect Magnitude (log scale)",
+            NODE_COLOR,
+        )
+        fig.tight_layout(pad=2.5)
+        save_path = base_save_path.with_name(
+            f"{base_save_path.stem}_nodes"
+        ).with_suffix(base_save_path.suffix)
+        fig.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Saved nodes-only distribution plot to {save_path}")
+
+    if "edges_only" in output_modes:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 9))
+        _create_single_boxplot(
+            ax,
+            edge_plot_data,
+            sorted_edge_labels,
+            "",
+            "Diffusion Time Transition ($t \\rightarrow t - \\Delta t$)",
+            "Absolute Effect Magnitude (log scale)",
+            EDGE_COLOR,
+        )
+        fig.tight_layout(pad=2.5)
+        save_path = base_save_path.with_name(
+            f"{base_save_path.stem}_edges"
+        ).with_suffix(base_save_path.suffix)
+        fig.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Saved edges-only distribution plot to {save_path}")
