@@ -661,7 +661,7 @@ if __name__ == "__main__":
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
     from circuit_plotting import plot_causal_circuit
-    from circuit_utils import get_topk_feature_indices
+    from circuit_utils import get_topk_component_indices
     from config import TopKSAEConfig
     from core.sae.topk_sae import TopKSAE
 
@@ -768,8 +768,7 @@ if __name__ == "__main__":
             "(Markov assumption: t -> t+1)..."
         )
         edges = {}
-        sorted_timesteps = sorted(timesteps_to_analyze) + [probe_timestep_idx]
-
+        sorted_timesteps = sorted(timesteps_to_analyze)
         for i in range(len(sorted_timesteps) - 1):
             t_up = sorted_timesteps[i]
             t_down = sorted_timesteps[i + 1]
@@ -778,7 +777,7 @@ if __name__ == "__main__":
                 f"Identifying top {top_k_jvp_nodes} downstream nodes for edge "
                 f"{t_up}->{t_down}..."
             )
-            downstream_feature_indices = get_topk_feature_indices(
+            downstream_feature_indices = get_topk_component_indices(
                 node_results.nodes[t_down], k=top_k_jvp_nodes
             )
 
@@ -843,7 +842,6 @@ if __name__ == "__main__":
         timesteps=timesteps_to_analyze + [probe_timestep_idx],
         save_path="output_circuit/my_circuit.png",
         top_k_nodes_per_ts=5,
-        top_k_edges=20,
+        top_k_edges=50,
         num_inference_steps=num_inference_steps,
     )
-    logger.info("Done.")

@@ -35,7 +35,7 @@ class PlottingConfig(Serializable):
     """Configuration for plotting a saved circuit."""
 
     circuit_path: str = (
-        "../../results/circuits_test/20250905_014611/circuit_p2_s2.pt"
+        "../../results/circuits/birds_vs_cats/20250905_055102/circuit_p50_s2.pt"
     )
     """Path to the saved circuit .pt file."""
 
@@ -44,7 +44,7 @@ class PlottingConfig(Serializable):
 
     top_k_nodes: int = 7
     """Number of top nodes to display per timestep."""
-    top_k_edges: int = 20
+    top_k_edges_per_ts: int = 7
     """Total number of top edges to display in the plot."""
 
     num_inference_steps: int = 25
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         timesteps=timesteps_analyzed,
         save_path=circuit_save_path,
         top_k_nodes_per_ts=config.top_k_nodes,
-        top_k_edges=config.top_k_edges,
+        top_k_edges_per_ts=config.top_k_edges_per_ts,
         num_inference_steps=metadata_config.get("num_inference_steps", "N/A"),
     )
 

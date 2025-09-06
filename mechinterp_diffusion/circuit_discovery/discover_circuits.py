@@ -361,7 +361,7 @@ if __name__ == "__main__":
         save_path=Path(config.output_dir)
         / f"circuit_p{config.num_prompts}_s{config.num_seeds}.png",
         top_k_nodes_per_ts=10,
-        top_k_edges=50,
+        top_k_edges_per_ts=5,
         num_inference_steps=config.num_inference_steps,
     )
 

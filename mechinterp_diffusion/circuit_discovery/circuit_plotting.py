@@ -37,7 +37,7 @@ def plot_causal_circuit(
     timesteps: List[int],
     save_path: str,
     top_k_nodes_per_ts: int = 10,
-    top_k_edges: int = 50,
+    top_k_edges_per_ts: int = 50,
     num_inference_steps: int = 25,
 ) -> None:
     """
@@ -57,7 +57,8 @@ def plot_causal_circuit(
         save_path (str): Path to save the plot.
         top_k_nodes_per_ts (int, optional): Number of top nodes to keep per
             timestep. Defaults to 10.
-        top_k_edges (int, optional): Number of top edges to keep overall.
+        top_k_edges_per_ts (int, optional): Number of top edges to keep
+            overall.
             Defaults to 50.
         num_inference_steps (int, optional): Number of diffusion timesteps.
             Defaults to 25.
@@ -155,8 +156,22 @@ def plot_causal_circuit(
                         )
 
     # Apply a single, global top-k filter to the valid edges
-    all_valid_edges.sort(key=lambda x: abs(x[2]), reverse=True)
-    filtered_edges = all_valid_edges[:top_k_edges]
+    # all_valid_edges.sort(key=lambda x: abs(x[2]), reverse=True)
+    # filtered_edges = all_valid_edges[:top_k_edges_per_ts]
+
+    # Group edges by source timestep and apply top-k filter per timestep
+    edges_by_timestep = defaultdict(list)
+    for edge in all_valid_edges:
+        source_timestep = edge[0][
+            0
+        ]  # t_up from ((t_up, feat_up), (t_down, feat_down), weight)
+        edges_by_timestep[source_timestep].append(edge)
+
+    # Apply top-k filtering per timestep
+    filtered_edges = []
+    for _, t_edges in edges_by_timestep.items():
+        t_edges.sort(key=lambda x: abs(x[2]), reverse=True)
+        filtered_edges.extend(t_edges[:top_k_edges_per_ts])
 
     _plot_hierarchical_circuit(
         filtered_nodes,
@@ -256,7 +271,7 @@ def _plot_hierarchical_circuit(
                         "#000000" if (0.2 < norm(effect) < 0.8) else "#ffffff"
                     )
                     node_label = "Res" if feat_idx == "res" else f"F{feat_idx}"
-                    shape = "ellipse" if feat_idx == "res" else "circle"
+                    shape = "diamond" if feat_idx == "res" else "circle"
                     cluster.node(
                         node_name,
                         label=node_label,
