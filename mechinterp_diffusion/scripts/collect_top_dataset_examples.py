@@ -232,7 +232,7 @@ class TopExamplesExtractor:
             Dataset: The loaded dataset.
         """
         dataset = load_from_disk(self.config.dataset_path)
-        dataset = dataset["test"]
+        dataset = dataset["test"].shuffle(seed=123)
 
         # Make sure we have the prompt column
         assert (
