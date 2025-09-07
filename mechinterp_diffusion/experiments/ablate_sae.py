@@ -244,10 +244,6 @@ def train_and_evaluate(cfg: AblationConfig) -> Dict[str, Any]:
     cfg.trainer.seed = cfg.seed
     set_all_seeds(cfg.trainer.seed)
 
-    from icecream import ic
-
-    ic(cfg.trainer.seed)
-
     if cfg.sae_type == "topk":
         # Convert from Hydra's DictConfig
         sae_config = TopKSAEConfig(**cfg.sae)
