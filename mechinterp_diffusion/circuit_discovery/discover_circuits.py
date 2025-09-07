@@ -1,5 +1,9 @@
 """
 Main script for sparse feature circuit discovery in diffusion models.
+
+Based on SHIFT paper and circuits.py code:
+- https://github.com/saprmarks/feature-circuits/blob/main/circuit.py
+- https://arxiv.org/abs/2403.19647
 """
 
 # =========================================================================== #

@@ -1,5 +1,8 @@
 """
 Utility functions needed for temporal attribution in circuit discovery
+
+Based on SHIFT paper and attribution code:
+- https://arxiv.org/abs/2403.19647
 """
 
 # =========================================================================== #
