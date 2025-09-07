@@ -683,7 +683,14 @@ def run_standard_mode(
         )
         sub_vecs = (
             extract_activations(
-                pipe, sae, control_prompt, ctrl_indices, config, hook_name
+                pipe,
+                sae,
+                control_prompt,
+                ctrl_indices,
+                config,
+                hook_name,
+                height=height,
+                width=width,
             )
             if config.patching_mode == "add_source_subtract_control"
             else None
