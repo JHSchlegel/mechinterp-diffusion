@@ -550,7 +550,7 @@ class SAEInterventionManager:
 
                 grid_images.append(feature_row)
 
-            grid_path = os.path.join(prompt_dir, "grid_visualization.png")
+            grid_path = os.path.join(prompt_dir, "grid_visualization.pdf")
             column_labels = ["Original"] + self.config.intervention_values
 
             self._visualize_grid_results(
@@ -998,14 +998,14 @@ class SAEInterventionManager:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
         fig, axes = plt.subplots(
-            n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4.5), squeeze=False
+            n_rows, n_cols, figsize=(n_cols * 3.5, n_rows * 3.5), squeeze=False
         )
 
-        # Column titles
+        # Column titles (only on first row)
         for j, val in enumerate(intervention_values):
             title_text = str(val) if isinstance(val, str) else f"ξ={val:.2f}"
             axes[0, j].set_title(
-                title_text, pad=10, fontsize=28, fontweight="bold"
+                title_text, pad=8, fontsize=28, fontweight="bold"
             )
 
         # Feature/row labels
@@ -1028,21 +1028,24 @@ class SAEInterventionManager:
                     axes[i, j].imshow(np.array(grid_images[i][j]))
                 axes[i, j].set_xticks([])
                 axes[i, j].set_yticks([])
+                # Remove individual subplot spacing
+                axes[i, j].set_aspect("equal")
 
         plt.subplots_adjust(
             left=0.15,
-            right=0.98,
-            top=0.92,
-            bottom=0.05,
-            wspace=0.15,
-            hspace=0.15,
+            right=0.99,
+            top=0.96,
+            bottom=0.01,
+            wspace=0.02,
+            hspace=0.01,
         )
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.savefig(save_path.replace(".pdf", ".png"), bbox_inches="tight")
         plt.close(fig)
 
         self._create_difference_grid(
             grid_images,
-            save_path.replace(".png", "_differences.png"),
+            save_path.replace(".pdf", "_differences.png"),
             intervention_values,
             feature_indices,
             prompt,

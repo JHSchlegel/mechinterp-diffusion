@@ -43,7 +43,7 @@ from core.diffusion.hooked_sd_pipeline import HookedStableDiffusionPipeline
 from core.sae.metrics import explained_variance
 from core.sae.topk_sae import TopKSAE
 from core.utils.analysis_utils import get_block_label
-from core.utils.hooks import TimedHook
+from core.utils.hooks import TimedHook, reconstruct_sae_hook
 from core.utils.reproducibility import set_all_seeds
 
 logging.basicConfig(
@@ -68,8 +68,8 @@ class SAEAssessmentConfig(Serializable):
     # SAE and model configuration
     sae_paths: List[str] = field(
         default_factory=lambda: [
-            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",
+            "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
+            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
         ]
     )
     """Paths to SAE model checkpoints"""
@@ -99,11 +99,11 @@ class SAEAssessmentConfig(Serializable):
     """Number of prompts to evaluate"""
 
     # Evaluation configuration
-    seeds: List[int] = field(default_factory=lambda: [42, 123, 456, 789, 1337])
+    seeds: List[int] = field(default_factory=lambda: [42, 43, 44, 45, 46])
     """Random seeds for evaluation"""
 
     timestep_intervals: List[str] = field(
-        default_factory=lambda: ["0-4", "10-14", "20-24"]
+        default_factory=lambda: ["0-9", "10-19", "20-24"]
     )
     """Timestep intervals for feature removal (format: 'start-end')"""
 
@@ -234,51 +234,7 @@ def main():
     assessment = SAEPerformanceAssessment(config)
 
     # Run assessment
-    results_df = assessment.run_full_assessment(prompts)
-
-    # Print summary
-    logger.info("\n" + "=" * 60)
-    logger.info("SAE PERFORMANCE ASSESSMENT COMPLETE")
-    logger.info("=" * 60)
-
-    # Per-module summary
-    logger.info("\nPER-MODULE SUMMARY:")
-    for module in config.target_modules:
-        module_data = results_df[results_df["target_module"] == module]
-        logger.info(f"\n  {module}:")
-
-        if config.mode == "reconstruction":
-            logger.info(
-                f"LPIPS: {module_data['reconstruction_lpips'].mean():.4f} "
-                f"± {module_data['reconstruction_lpips'].std():.4f}"
-            )
-            logger.info(
-                f"R²: {module_data['reconstruction_r2'].mean():.4f} "
-                f"± {module_data['reconstruction_r2'].std():.4f}"
-            )
-            logger.info(
-                f"FID: {module_data['fid_score'].mean():.2f} "
-                f"± {module_data['fid_score'].std():.2f}"
-            )
-            logger.info(
-                f"Dead Features: {module_data['dead_features_pct'].mean():.2%}"
-            )
-        else:
-            # Feature removal mode summary
-            for interval_str in config.timestep_intervals:
-                interval_key = interval_str
-                lpips_col = f"removal_{interval_key}_lpips"
-                fid_col = f"removal_{interval_key}_fid"
-                if lpips_col in module_data.columns:
-                    logger.info(f"\n    Interval {interval_key}:")
-                    logger.info(
-                        f"      LPIPS: {module_data[lpips_col].mean():.4f} "
-                        f"± {module_data[lpips_col].std():.4f}"
-                    )
-                    logger.info(
-                        f"      FID: {module_data[fid_col].mean():.2f} "
-                        f"± {module_data[fid_col].std():.2f}"
-                    )
+    assessment.run_full_assessment(prompts)
 
 
 # =========================================================================== #
@@ -310,17 +266,21 @@ class FeatureKnockoutHook:
 
     def __call__(self, module, input, output):
         """Apply feature removal if within specified interval."""
-        if (
+        should_knockout = (
             self.removal_interval[0]
             <= self.current_step
             <= self.removal_interval[1]
-        ):
+        )
+        self.current_step = (self.current_step + 1) % self.total_steps
+        if should_knockout:
             diff = (
                 (output[0] - input[0])
                 .permute((0, 2, 3, 1))
                 .to(self.sae.device)
             )
+
             _, diff_cond = diff.chunk(2)
+
             bs, h, w, c = diff_cond.shape
             diff_cond = diff_cond.reshape(bs * h * w, c)
             sae_input, info = self.sae.preprocess_input(diff_cond)
@@ -328,7 +288,7 @@ class FeatureKnockoutHook:
             top_acts, _ = self.sae._get_topk(activations, k=self.sae.cfg.k)
             to_add: Tensor = self.sae.postprocess_output(
                 top_acts.squeeze(-1) @ self.sae.W_dec.weight.T, info
-            )
+            ).reshape(-1, h, w, c)
 
             output_tensor = output[0]
 
@@ -346,15 +306,11 @@ class FeatureKnockoutHook:
 
             # Subtract for knockout
             modified_output = output_tensor - to_add_permuted * multiplier
+
             return (modified_output,)
 
         else:
-            # Normal pass-through
-            result = output
-
-        # Increment step counter
-        self.current_step = (self.current_step + 1) % self.total_steps
-        return result
+            return output
 
 
 # =========================================================================== #
@@ -512,7 +468,7 @@ class SAEPerformanceAssessment:
                 .unsqueeze(0)
                 .to(self.device)
             )
-            orig_tensor = (orig_tensor * 255).byte()
+            orig_tensor = orig_tensor.byte()
             self.fid_metric.update(orig_tensor, real=True)
 
             all_original = []
@@ -573,51 +529,11 @@ class SAEPerformanceAssessment:
                 x_reconstructed=all_reconstructed.double(),
             )
 
-            current_timestep[0] = 0
-
-            def reconstruction_hook(m, i, o):
-                # Calculate diff
-                original_diff = (o[0] - i[0]).permute((0, 2, 3, 1))
-                original_diff = original_diff.to(
-                    device=self.device, dtype=self.torch_dtype
-                )
-
-                if original_diff.shape[0] == 2:
-                    _, original_diff = original_diff.chunk(2, dim=0)
-
-                _, H, W, C = original_diff.shape
-                original_diff_flat = original_diff.view(H * W, C)
-
-                # Process through SAE
-                sae_input, info = sae.preprocess_input(  # noqa: B023
-                    original_diff_flat
-                )
-                activations = torch.relu(sae.encode(sae_input))  # noqa: B023
-                top_acts, _ = sae._get_topk(  # noqa: B023
-                    activations, k=sae.cfg.k  # noqa: B023
-                )
-                reconstructed = sae.decode(top_acts)  # noqa: B023
-                sae_output = sae.postprocess_output(  # noqa: B023
-                    reconstructed, info
-                )
-
-                # Reshape and create reconstructed output
-                reconstructed_diff = sae_output.view(1, H, W, C).permute(
-                    0, 3, 1, 2
-                )
-                reconstructed_output = i[0] + reconstructed_diff.to(
-                    device=i[0].device, dtype=i[0].dtype
-                )
-
-                current_timestep[0] = (  # noqa: B023
-                    current_timestep[0] + 1  # noqa: B023
-                ) % self.config.num_inference_steps
-
-                return (reconstructed_output,)
-
             # Create timed hook for reconstruction
             timed_hook = TimedHook(
-                reconstruction_hook,
+                lambda m, i, o: reconstruct_sae_hook(
+                    sae, m, i, o  # noqa:B023
+                ),  # reconstruction_hook,
                 self.config.num_inference_steps,
                 apply_at_steps=list(range(self.config.num_inference_steps)),
             )
@@ -645,8 +561,7 @@ class SAEPerformanceAssessment:
                 .unsqueeze(0)
                 .to(self.device)
             )
-            recon_tensor = (recon_tensor * 255).byte()
-            self.fid_metric.update(recon_tensor, real=False)
+            self.fid_metric.update(recon_tensor.byte(), real=False)
 
             # Convert images to tensors
             original_tensor = (
@@ -800,7 +715,7 @@ class SAEPerformanceAssessment:
                     .unsqueeze(0)
                     .to(self.device)
                 )
-                orig_tensor = (orig_tensor * 255).byte()
+                orig_tensor = orig_tensor.byte()
                 self.fid_metric.update(orig_tensor, real=True)
 
                 # Generate image with feature removal
@@ -828,7 +743,7 @@ class SAEPerformanceAssessment:
                     .unsqueeze(0)
                     .to(self.device)
                 )
-                mod_tensor = (mod_tensor * 255).byte()
+                mod_tensor = mod_tensor.byte()
                 self.fid_metric.update(mod_tensor, real=False)
 
                 # Convert to tensors and compute metrics

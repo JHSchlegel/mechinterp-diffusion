@@ -16,6 +16,7 @@ Changes made to original code:
  - use contextlib.nullcontext for torch.no_grad() to
  allow for gradients in the denoising loop in circuit discovery and disable
  them during normal generation
+ - added support for extracting both conditioanl and unconditional latents.
 
 
 License of original code:
@@ -250,7 +251,12 @@ from .hooked_scheduler import HookedNoiseScheduler
 # =========================================================================== #
 #                          Helper Functions                                   #
 # =========================================================================== #
-def retrieve(io, unconditional: bool = False, guidance_scale: float = 7.5):
+def retrieve(
+    io,
+    unconditional: bool = False,
+    guidance_scale: float = 7.5,
+    return_both_cond_uncond: bool = False,
+) -> torch.Tensor:
     if isinstance(io, tuple):
         if len(io) == 1:
             io = io[0].detach().cpu()
@@ -261,6 +267,8 @@ def retrieve(io, unconditional: bool = False, guidance_scale: float = 7.5):
     else:
         raise ValueError("Input/Output must be a tensor, or 1-element tuple")
     if guidance_scale > 1.0:
+        if return_both_cond_uncond:
+            return io  # stacked tensor [uncond, cond]
         io_uncond, io_cond = io.chunk(2)
         if unconditional:
             return io_uncond
@@ -394,6 +402,7 @@ class HookedDiffusionAbstractPipeline:
         prompt: Union[str, List[str]] = None,
         num_images_per_prompt: Optional[int] = 1,
         device: torch.device = torch.device("cuda"),  # noqa: B008
+        return_both_cond_uncond: bool = False,
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator: Optional[
@@ -444,6 +453,7 @@ class HookedDiffusionAbstractPipeline:
                 cache_output,
                 unconditional,
                 guidance_scale,
+                return_both_cond_uncond,
             )
             for position in positions_to_cache
         ]
@@ -882,6 +892,7 @@ class HookedDiffusionAbstractPipeline:
         cache_output: Dict,
         unconditional: bool = False,
         guidance_scale: float = 7.5,
+        return_both_cond_uncond: bool = False,
     ):
         block = self._locate_block(position)
 
@@ -889,7 +900,12 @@ class HookedDiffusionAbstractPipeline:
             if cache_input is not None:
                 if position not in cache_input:
                     cache_input[position] = []
-                input_to_cache = retrieve(input, unconditional, guidance_scale)
+                input_to_cache = retrieve(
+                    input,
+                    unconditional,
+                    guidance_scale,
+                    return_both_cond_uncond,
+                )
                 if len(input_to_cache.shape) == 4:
                     input_to_cache = input_to_cache.view(
                         input_to_cache.shape[0], input_to_cache.shape[1], -1
@@ -900,7 +916,10 @@ class HookedDiffusionAbstractPipeline:
                 if position not in cache_output:
                     cache_output[position] = []
                 output_to_cache = retrieve(
-                    output, unconditional, guidance_scale
+                    output,
+                    unconditional,
+                    guidance_scale,
+                    return_both_cond_uncond,
                 )
                 if len(output_to_cache.shape) == 4:
                     output_to_cache = output_to_cache.view(
@@ -1258,7 +1277,6 @@ class HookedDiffusionAbstractPipeline:
                     latent_model_input, t
                 )
 
-                # predict the noise residual
                 noise_pred = self.unet(
                     latent_model_input,
                     t,

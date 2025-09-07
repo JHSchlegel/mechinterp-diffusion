@@ -18,7 +18,7 @@ from safetensors.torch import load_file, save_file
 from simple_parsing import parse
 from torch.utils.data import DataLoader
 
-sys.path.append(str(Path(__file__).resolve().parents[2]))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from config import ProbeConfig
 from probe import LatentProbe, test_probe, train_probe
 

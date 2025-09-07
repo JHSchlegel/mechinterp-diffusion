@@ -1,5 +1,22 @@
 """
 Module for automated activation patching experiments on diffusion models.
+
+Example Usage:
+    # Add top-k features from source prompt to control prompt and subtract
+    # top-k features from control prompt:
+    python activation_patching.py --patching_mode add_source_subtract_control
+
+    # Add top-k features from source prompt to control prompt only:
+    python activation_patching.py --patching_mode add_source
+
+    # First subtract entire SAE reconstruction of control prompt, then add
+    # top-k features from source prompt:
+    python activation_patching.py --patching_mode blate_and_add_source
+
+Finally, by setting `--experiment_mode bidirectional`, the above patching
+methods can be applied in both directions between a source and control prompt.
+And in case of manual feature selection, specify `--manual_source_indices` and
+`--manual_control_indices` as lists of integers.
 """
 
 # =========================================================================== #
@@ -17,7 +34,6 @@ from typing import Callable, Dict, List, Literal, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from PIL import Image
 from simple_parsing import Serializable, parse
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -43,46 +59,50 @@ DTYPE_MAP = {
 # =========================================================================== #
 
 PROMPT_PAIRS = [
-    # {
-    #     "source": "A headshot photo of a woman",
-    #     "control": "A headshot photo of a man",
-    # },
-    # {
-    #     "source": "A headshot photo of a man",
-    #     "control": "A headshot photo of a woman",
-    # },
-    # {
-    #     "source": "A high-resolution photo of a rose",
-    #     "control": "A high-resolution photo of a dog",
-    # },
+    {
+        "source": "A bear in a forest.",
+        "control": "A bear in the arctic.",
+    },
     {
         "source": "A high-resolution photo of a cat.",
         "control": "A high-resolution photo of a bird.",
     },
-    {
-        "source": "A photo-realistic image of a bird.",
-        "control": "A photo-realistic image of a cat.",
-    },
+    # {
+    #     "source": "A high-resolution photo of a bird.",
+    #     "control": "A high-resolution photo of a cat.",
+    # },
     {
         "source": "A high-resolution photo of a dog.",
         "control": "A high-resolution photo of a cat.",
     },
-    {
-        "source": "A high-resolution photo of a dog.",
-        "control": "A high-resolution photo of a man.",
-    },
+    # {
+    #     "source": "A high-resolution photo of a dog.",
+    #     "control": "A high-resolution photo of a man.",
+    # },
+    # {
+    #     "source": "A portrait of a man.",
+    #     "control": "A portrait of a dog.",
+    # },
     {
         "source": "A crystal clear mountain lake.",
         "control": "A crystal clear ocean bay.",
     },
+    # {
+    #     "source": "A castle on a sunny day.",
+    #     "control": "A castle on a stormy day.",
+    # },
     {
-        "source": "A gothic cathedral with tall spires.",
-        "control": "A modern skyscraper with glass facade.",
+        "source": "A ship sailing on a calm ocean.",
+        "control": "A ship sailing on a rough ocean.",
     },
     {
-        "source": " An ancient, gnarled oak tree in a forest.",
-        "control": " A tall, slender palm tree on a tropical beach.",
+        "source": "An image of a tall cathedral.",
+        "control": "An image of a tall glass skyscraper.",
     },
+    # {
+    #     "source": "A city street during the day.",
+    #     "control": "A city street at night.",
+    # },
 ]
 
 # =========================================================================== #
@@ -102,16 +122,16 @@ class ActivationPatchingConfig(Serializable):
 
     sae_paths: List[str] = field(
         default_factory=lambda: [
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
             "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
+            # "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
         ]
     )
     """Paths to the trained TopKSAE model directories."""
 
     hook_names: List[str] = field(
         default_factory=lambda: [
-            "unet.up_blocks.1.attentions.1",
             "unet.down_blocks.2.attentions.0",
+            # "unet.up_blocks.1.attentions.1",
         ]
     )
     """Names of the model components to hook for activation patching."""
@@ -128,16 +148,16 @@ class ActivationPatchingConfig(Serializable):
     seed: int = 42
     """Random seed for reproducible results."""
 
-    output_dir: str = "../../results/patching"
+    output_dir: str = "../../results/bidirectional"
     """Directory to save experiment results and generated images."""
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     """Device to run computations on."""
 
-    height: int = 768
+    height: int = 512
     """Height of the generated images."""
 
-    width: int = 768
+    width: int = 512
     """Width of the generated images."""
 
     # -------------------------------------------------------------------------
@@ -149,19 +169,40 @@ class ActivationPatchingConfig(Serializable):
     steps.
     """
 
-    patching_method: Literal["replace", "ablate_and_replace"] = (
-        "ablate_and_replace"
-    )
-    """Patching method: 'replace' or 'ablate_and_replace'."""
+    patching_mode: Literal[
+        "add_source",
+        "add_source_subtract_control",
+        "ablate_and_add_source",
+    ] = "add_source_subtract_control"
+    """
+    Specifies the patching method:
+    - 'add_source': Adds the top-k features from the source prompt.
+    - 'add_source_subtract_control': Adds top-k source features and subtracts
+        top-k control features.
+    - 'ablate_and_add_source': Subtracts the SAE's entire reconstruction of the
+        destination signal, then adds the top-k source features.
+    """
+
+    experiment_mode: Literal["standard", "bidirectional"] = "bidirectional"
+    """'standard' for one-way patching, 'bidirectional' for two-way."""
 
     k_values: List[int] = field(default_factory=lambda: [1, 5, 20, 50, 200])
     """Grid of k values (number of top features to patch)."""
 
-    patch_scale: float = 2.0
-    """Factor to scale the patch vector by."""
+    manual_source_indices: Optional[List[int]] = None
+    """Manually specify source feature indices, bypassing k-grid search."""
 
-    reconstruct_scale: float = 1.0
-    """Scale factor for reconstruction strength. Will be subtracted."""
+    manual_control_indices: Optional[List[int]] = None
+    """
+    Manually specify control feature indices for subtraction in
+    'add_source_subtract_control' mode.
+    """
+
+    add_scale: float = 2.0
+    """Scale for adding features."""
+
+    subtract_scale: float = 1.0
+    """Scale for subtracting features."""
 
     # -------------------------------------------------------------------------
     # Experiment settings
@@ -221,16 +262,28 @@ def main():
             logger.info(f"Control: {control_prompt[:50]}...")
             logger.info(f"{'-'*80}")
 
-            run_experiment_with_k_grid(
-                source_prompt,
-                control_prompt,
-                config,
-                pipe,
-                sae,
-                hook_name,
-                height=config.height,
-                width=config.width,
-            )
+            if config.experiment_mode == "standard":
+                run_standard_mode(
+                    source_prompt,
+                    control_prompt,
+                    config,
+                    pipe,
+                    sae,
+                    hook_name,
+                    height=config.height,
+                    width=config.width,
+                )
+            else:
+                run_bidirectional_mode(
+                    source_prompt,
+                    control_prompt,
+                    config,
+                    pipe,
+                    sae,
+                    hook_name,
+                    height=config.height,
+                    width=config.width,
+                )
 
     logger.info("All experiments complete!")
 
@@ -245,13 +298,12 @@ def find_top_k_features(
     sae: TopKSAE,
     source_prompt: str,
     control_prompt: str,
-    timestep_indices: List[int],
     k: int,
     config: ActivationPatchingConfig,
     hook_name: str,
     height: int = 512,
     width: int = 512,
-) -> List[int]:
+) -> Tuple[List[int], List[int]]:
     """
     Find top-k differentially active features between source and control
     prompts.
@@ -261,7 +313,6 @@ def find_top_k_features(
         sae (TopKSAE): The sparse autoencoder for feature analysis.
         source_prompt (str): The source prompt to analyze.
         control_prompt (str): The control prompt to compare against.
-        timestep_indices (List[int]): Timestep indices to analyze.
         k (int): Number of top features to return.
         config (ActivationPatchingConfig): Configuration object containing
             experiment parameters.
@@ -269,7 +320,9 @@ def find_top_k_features(
         width (int, optional): Width of the input images. Defaults to 512.
 
     Returns:
-        List[int]: Indices of the top-k most differentially active features.
+        Tuple[List[int], List[int], List[float], List[float]]:
+        Indices and differentials of the top-k most differentially
+            active features for source and control prompts.
     """
     logger.info(f"Finding top {k} differentially active features:")
 
@@ -300,6 +353,7 @@ def find_top_k_features(
 
         with torch.no_grad():
             all_feature_acts = []
+
             for t_idx in range(config.num_inference_steps):
                 # Extract cached activations
                 input_cached = cache["input"][hook_name][:, t_idx]
@@ -326,49 +380,47 @@ def find_top_k_features(
     # Normalize to relative activations
     total_s_src = torch.sum(s_src)
     total_s_ctrl = torch.sum(s_ctrl)
-    relative_s_src = s_src / (total_s_src + 1e-9)
-    relative_s_ctrl = s_ctrl / (total_s_ctrl + 1e-9)
+    relative_s_src = s_src / (total_s_src + 1e-12)
+    relative_s_ctrl = s_ctrl / (total_s_ctrl + 1e-12)
 
-    # Compute gamma score (differential activation)
+    # Compute gamma score (differential activation) form surkov et al.
     gamma = relative_s_src - relative_s_ctrl
-    _, top_k_indices = torch.topk(gamma, k)
+    _, top_src_indices = torch.topk(gamma, k)
+    _, top_ctrl_indices = torch.topk(-gamma, k)
 
-    return top_k_indices.tolist()
+    return top_src_indices.tolist(), top_ctrl_indices.tolist()
 
 
-def extract_source_patch_vectors(
+def extract_activations(
     pipe: HookedStableDiffusionPipeline,
     sae: TopKSAE,
-    source_prompt: str,
-    causal_feature_indices: List[int],
-    timestep_indices: List[int],
+    prompt: str,
+    feature_indices: List[int],
     config: ActivationPatchingConfig,
     hook_name: str,
     height: int = 512,
     width: int = 512,
-) -> Tuple[Dict[int, torch.Tensor], List[Image.Image]]:
+) -> Tuple[Dict[int, torch.Tensor]]:
     """
     Extract patch vectors from source prompt for identified causal features.
 
     Args:
         pipe (HookedStableDiffusionPipeline): The diffusion model pipeline.
         sae (TopKSAE): The sparse autoencoder.
-        source_prompt (str): Source prompt to extract features from.
-        causal_feature_indices (List[int]): Indices of features to patch.
-        timestep_indices (List[int]): Timesteps to extract patches for.
-            config: Configuration object.
+        prompt (str): Prompt to extract features from.
+        feature_indices (List[int]): Indices of features to cache activations
+            for.
+        config: Configuration object.
         height (int, optional): Height of the input images. Defaults to 512.
         width (int, optional): Width of the input images. Defaults to 512.
 
     Returns:
-        Tuple[Dict[int, torch.Tensor], List[Image.Image]]: Patch vectors and
-            source image.
+        Tuple[Dict[int, torch.Tensor]]: Patch vectors.
     """
-    logger.info("Extracting source patch vectors for causal features...")
 
     generator = torch.Generator(config.device).manual_seed(config.seed)
-    source_img, source_cache = pipe.run_with_cache(
-        prompt=source_prompt,
+    img, cache = pipe.run_with_cache(
+        prompt=prompt,
         positions_to_cache=[hook_name],
         num_inference_steps=config.num_inference_steps,
         guidance_scale=config.guidance_scale,
@@ -379,46 +431,44 @@ def extract_source_patch_vectors(
         width=width,
     )
 
-    source_patch_vectors = {}
+    activations = {}
     with torch.no_grad():
-        for t_idx in timestep_indices:
-            source_input_cached = source_cache["input"][hook_name][:, t_idx]
-            source_output_cached = source_cache["output"][hook_name][:, t_idx]
-            source_diff = (source_output_cached - source_input_cached).to(
-                config.device
-            )
+        for t_idx in config.patching_timestep_indices:
+            input_cached = cache["input"][hook_name][:, t_idx]
+            output_cached = cache["output"][hook_name][:, t_idx]
+            diff = (output_cached - input_cached).to(config.device)
 
-            sae_in, _ = sae.preprocess_input(source_diff)
+            sae_in, _ = sae.preprocess_input(diff)
             feature_acts = torch.relu(sae.encode(sae_in))
             top_acts, _ = sae._get_topk(feature_acts, k=sae.cfg.k)
 
             causal_acts = torch.zeros_like(feature_acts)
-            for f_idx in causal_feature_indices:
-                causal_acts[:, f_idx] = top_acts[:, f_idx]
+            causal_acts[:, feature_indices] = top_acts[:, feature_indices]
 
-            reconstructed = sae.decode(causal_acts)
+            reconstructed = causal_acts @ sae.W_dec.weight.T
             reconstructed_post = sae.postprocess_output(reconstructed, {})
 
-            B, HW, C = source_diff.shape
+            B, HW, C = diff.shape
             H = W = int(np.sqrt(HW))
-            source_patch_vectors[t_idx] = (
+            activations[t_idx] = (
                 reconstructed_post.reshape(B, HW, C)
                 .permute(0, 2, 1)
                 .reshape(B, C, H, W)
             )
 
-    logger.info("Successfully extracted patch vectors")
-    return source_patch_vectors, source_img
+    return activations
+
+
+# =========================================================================== #
+#                           Hook Creation Functions                           #
+# =========================================================================== #
 
 
 def create_patching_hook(
-    source_patch_vectors: Dict[int, torch.Tensor],
+    add_vectors: Dict[int, torch.Tensor],
     sae: TopKSAE,
-    timestep_indices: List[int],
-    patching_method: str,
-    patch_scale: float,
-    reconstruct_scale: float,
-    run_type: str,
+    config: ActivationPatchingConfig,
+    subtract_vectors: Optional[Dict[int, torch.Tensor]] = None,
 ) -> Callable:
     """
     Create a hook function for activation patching during inference.
@@ -427,12 +477,9 @@ def create_patching_hook(
         source_patch_vectors (Dict[int, torch.Tensor]):
             Precomputed patch vectors.
         sae (TopKSAE): The sparse autoencoder.
-        timestep_indices (List[int]): Timesteps to apply patching.
-        patching_method (str): Method for patching
-            ('replace' or 'ablate_and_replace').
-        patch_scale (float): Scale factor for patch strength.
-        reconstruct_scale (float): Scale factor for reconstruction strength.
-        run_type (str): Type of run ('control' or 'patched').
+        config (ActivationPatchingConfig): The configuration object.
+        subtract_vectors (Optional[Dict[int, torch.Tensor]]): Precomputed patch
+            vectors for subtraction.
 
     Returns:
         Callable: Hook function for use with the pipeline.
@@ -454,52 +501,43 @@ def create_patching_hook(
             torch.Tensor: Modified output tensor with patching applied.
         """
         t_idx = hook_state["step_idx"]
+        if t_idx in config.patching_timestep_indices:
+            out_val = out_tensor[0]
 
-        if run_type == "patched" and t_idx in timestep_indices:
-            out_tensor_val = out_tensor[0]
-            source_patch_diff = source_patch_vectors[t_idx][0].to(
-                out_tensor_val.dtype
-            )
-            pure_source_patch = source_patch_diff * patch_scale
-
-            # Apply ablate-and-replace method if specified
-            # i.e. subtract SAES reconstruction and add patching
-            if patching_method == "ablate_and_replace":
-                in_tensor_val = in_tensor[0]
-                corrupted_diff = out_tensor_val - in_tensor_val
-                B, C, H, W = corrupted_diff.shape
-
+            if config.patching_mode == "ablate_and_add_source":
+                diff = out_val - in_tensor[0]
+                B, C, H, W = diff.shape
                 with torch.no_grad():
-                    # Process corrupted signal through SAE
-                    corrupted_diff_permuted = corrupted_diff.permute(
-                        0, 2, 3, 1
-                    )
-                    sae_in, _ = sae.preprocess_input(corrupted_diff_permuted)
-                    feature_acts = torch.relu(sae.encode(sae_in))
-                    top_acts, _ = sae._get_topk(feature_acts, k=sae.cfg.k)
-
-                    # Reconstruct signal
-                    reconstructed_corrupted_post = sae.postprocess_output(
+                    sae_in, _ = sae.preprocess_input(diff.permute(0, 2, 3, 1))
+                    acts = torch.relu(sae.encode(sae_in))
+                    top_acts, _ = sae._get_topk(acts, k=sae.cfg.k)
+                    reconstructed = sae.postprocess_output(
                         sae.decode(top_acts), {}
                     )
-                    HW = H * W
-                    reconstructed_corrupted_diff = (
-                        reconstructed_corrupted_post.reshape(B, HW, C)
+                    reconstructed_diff = (
+                        reconstructed.reshape(B, H * W, C)
                         .permute(0, 2, 1)
                         .reshape(B, C, H, W)
                     )
+                out_val -= config.subtract_scale * reconstructed_diff
 
-                # Subtract corrupted reconstruction before adding source patch
-                out_tensor_val -= (
-                    reconstruct_scale * reconstructed_corrupted_diff
-                )
+            add_patch = add_vectors[t_idx][0].to(out_val.dtype)
+            sub_patch = 0
+            if (
+                config.patching_mode == "add_source_subtract_control"
+                and subtract_vectors
+            ):
+                sub_patch = subtract_vectors[t_idx][0].to(out_val.dtype)
 
-            # Apply patch differentially to conditional/unconditional passes
-            if out_tensor_val.shape[0] == 2:  # Classifier-free guidance
-                out_tensor_val[1] += pure_source_patch  # Conditional
-                out_tensor_val[0] -= pure_source_patch  # Unconditional
+            patch_delta = (
+                config.add_scale * add_patch
+                - config.subtract_scale * sub_patch
+            )
+            if out_val.shape[0] == 2:  # [uncond, cond]
+                out_val[1] += patch_delta
+                out_val[0] -= patch_delta
             else:
-                out_tensor_val += pure_source_patch
+                out_val += patch_delta
 
         hook_state["step_idx"] += 1
         return out_tensor
@@ -512,7 +550,7 @@ def create_patching_hook(
 # =========================================================================== #
 
 
-def run_experiment_with_k_grid(
+def run_standard_mode(
     source_prompt: str,
     control_prompt: str,
     config: ActivationPatchingConfig,
@@ -521,7 +559,7 @@ def run_experiment_with_k_grid(
     hook_name: str,
     height: int = 512,
     width: int = 512,
-) -> Path:
+) -> None:
     """
     Run activation patching experiment with grid of k values.
 
@@ -531,9 +569,6 @@ def run_experiment_with_k_grid(
         config (ActivationPatchingConfig): Configuration object.
         pipe (HookedStableDiffusionPipeline): The diffusion model pipeline.
         sae (TopKSAE): The sparse autoencoder.
-
-    Returns:
-        Path: Directory where results were saved.
     """
     set_all_seeds(config.seed)
 
@@ -554,17 +589,18 @@ def run_experiment_with_k_grid(
         max_ts = max(config.patching_timestep_indices)
         ts_folder = f"timesteps_{min_ts}-{max_ts}"
 
-    base_save_dir = (
+    save_dir = (
         Path(config.output_dir)
         / block_name
+        / Path(config.experiment_mode)
         / prompt_folder
         / ts_folder
         / f"{timestamp}"
     )
-    base_save_dir.mkdir(parents=True, exist_ok=True)
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config:
-    with open(base_save_dir / "config.json", "w") as f:
+    with open(save_dir / "config.json", "w") as f:
         json.dump(config.to_dict(), f, indent=4)
 
     # Generate source image once
@@ -577,7 +613,7 @@ def run_experiment_with_k_grid(
         height=height,
         width=width,
     ).images
-    source_img[0].save(base_save_dir / "source_image.png")
+    source_img[0].save(save_dir / "source_image.png")
 
     # Generate control image once
     generator = torch.Generator(config.device).manual_seed(config.seed)
@@ -589,7 +625,7 @@ def run_experiment_with_k_grid(
         height=height,
         width=width,
     ).images
-    control_img[0].save(base_save_dir / "control_image.png")
+    control_img[0].save(save_dir / "control_image.png")
 
     # Store results for each k value
     results = {
@@ -598,56 +634,79 @@ def run_experiment_with_k_grid(
         "k_results": {},
     }
 
-    # Find features for the highest k value once
-    max_k = max(config.k_values)
-    logger.info(
-        f"Finding top {max_k} features (will subset for smaller k values)..."
-    )
-    all_causal_features = find_top_k_features(
-        pipe,
-        sae,
-        source_prompt,
-        control_prompt,
-        config.patching_timestep_indices,
-        max_k,
-        config,
-        hook_name,
-        height=height,
-        width=width,
-    )
+    use_circuit_label = config.manual_source_indices is not None
+    if use_circuit_label:
+        runs = [
+            {
+                "k": "manual",
+                "source_indices": config.manual_source_indices,
+                "control_indices": config.manual_control_indices or [],
+            }
+        ]
+
+    else:
+        # Find features for the highest k value once
+        max_k = max(config.k_values)
+        logger.info(f"Finding top {max_k} features...")
+        src_feats, ctrl_feats = find_top_k_features(
+            pipe=pipe,
+            sae=sae,
+            source_prompt=source_prompt,
+            control_prompt=control_prompt,
+            k=max_k,
+            config=config,
+            hook_name=hook_name,
+            height=height,
+            width=width,
+        )
+        runs = [
+            {
+                "k": k,
+                "source_indices": src_feats[:k],
+                "control_indices": ctrl_feats[:k],
+            }
+            for k in sorted(config.k_values)
+        ]
 
     # Run experiments for each k value by subsetting features
-    for k in sorted(config.k_values):
-        logger.info(f"Running patching with k={k}...")
-
-        causal_feature_indices = all_causal_features[:k]
-
-        # Extract clean patch vectors for these features
-        source_patch_vectors, _ = extract_source_patch_vectors(
+    for run in runs:
+        k, src_indices, ctrl_indices = (
+            run["k"],
+            run["source_indices"],
+            run["control_indices"],
+        )
+        logger.info(f"Running patch for k={k}...")
+        add_vecs = extract_activations(
             pipe,
             sae,
             source_prompt,
-            causal_feature_indices,
-            config.patching_timestep_indices,
+            src_indices + ctrl_indices,
             config,
             hook_name,
             height=height,
             width=width,
         )
-
-        # Run patched generation
-        hook_fn = create_patching_hook(
-            source_patch_vectors,
-            sae,
-            config.patching_timestep_indices,
-            config.patching_method,
-            config.patch_scale,
-            config.reconstruct_scale,
-            "patched",
+        sub_vecs = (
+            extract_activations(
+                pipe,
+                sae,
+                control_prompt,
+                ctrl_indices,
+                config,
+                hook_name,
+                height=height,
+                width=width,
+            )
+            if config.patching_mode == "add_source_subtract_control"
+            else None
         )
 
+        # Run patched generation
+        hook_fn = create_patching_hook(add_vecs, sae, config, sub_vecs)
+        generator.manual_seed(config.seed)
+
         generator = torch.Generator(config.device).manual_seed(config.seed)
-        patched_images = pipe.run_with_hooks(
+        patched_image = pipe.run_with_hooks(
             prompt=control_prompt,
             position_hook_dict={hook_name: hook_fn},
             num_inference_steps=config.num_inference_steps,
@@ -655,33 +714,277 @@ def run_experiment_with_k_grid(
             generator=generator,
             height=height,
             width=width,
-        )
+        )[0]
 
         # Save individual result
-        k_dir = base_save_dir / f"{k}_features"
-        k_dir.mkdir(exist_ok=True)
-        patched_images[0].save(k_dir / "patched_image.png")
+        k_id = "circuit" if use_circuit_label else f"{k}_features"
+        (save_dir / k_id).mkdir(exist_ok=True)
+        patched_image.save(save_dir / k_id / "patched_image.png")
+        results["k_results"][k] = patched_image
+        with open(save_dir / k_id / "details.txt", "w") as f:
+            f.write(
+                f"Source: {source_prompt}\nControl: {control_prompt}\n"
+                f"Source Features (+): {src_indices}\n"
+            )
+            if config.patching_mode == "add_source_subtract_control":
+                f.write(f"Control Features (-): {ctrl_indices}\n")
 
-        results["k_results"][k] = patched_images[0]
-
-        # Save experiment details
-        with open(k_dir / "details.txt", "w") as f:
-            f.write(f"Source: {source_prompt}\n")
-            f.write(f"Control: {control_prompt}\n")
-            f.write(f"K value: {k}\n")
-            f.write(f"Features: {causal_feature_indices}\n")
-
-    # Create paper-ready figure if requested
     create_paper_figure(
-        results, config.k_values, base_save_dir, config.figure_dpi
+        results,
+        [r["k"] for r in runs],
+        save_dir,
+        config.figure_dpi,
+        use_circuit_label,
     )
+    logger.info(f"Standard mode results saved to: {save_dir}")
 
-    logger.info(f"Results saved to: {base_save_dir}")
-    return base_save_dir
+
+def run_bidirectional_mode(
+    source_prompt: str,
+    control_prompt: str,
+    config: ActivationPatchingConfig,
+    pipe: HookedStableDiffusionPipeline,
+    sae: TopKSAE,
+    hook_name: str,
+    height: int = 512,
+    width: int = 512,
+) -> None:
+    """
+    Add most relevant features of prompt 1 and subtract most relevant features
+    of prompt 2.
+
+    Args:
+        source_prompt (str): The prompt for the source image.
+        control_prompt (str): The prompt for the control image.
+        config (ActivationPatchingConfig): The configuration for activation
+            patching.
+        pipe (HookedStableDiffusionPipeline): The diffusion pipeline.
+        sae (TopKSAE): The top-k spatial attention extractor.
+        hook_name (str): The name of the hook to use.
+        height (int, optional): The height of the generated images. Defaults
+            to 512.
+        width (int, optional): The width of the generated images. Defaults
+            to 512.
+    """
+    set_all_seeds(config.seed)
+
+    # Create directory
+    block_name = hook_name.replace("unet.", "").replace(".", "_")
+    words = (
+        source_prompt.lower().replace(",", "").replace(".", "").split()[:10]
+    )
+    prompt_slug = "_".join(words)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    base_save_dir = (
+        Path(config.output_dir)
+        / block_name
+        / Path(config.experiment_mode)
+        / prompt_slug
+        / timestamp
+    )
+    base_save_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(base_save_dir / "config.json", "w") as f:
+        json.dump(config.to_dict(), f, indent=4)
+
+    s_to_c_dir, c_to_s_dir = (
+        base_save_dir / "source_to_control",
+        base_save_dir / "control_to_source",
+    )
+    s_to_c_dir.mkdir(parents=True, exist_ok=True)
+    c_to_s_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate baseline images
+    generator = torch.Generator(config.device).manual_seed(config.seed)
+    source_img = pipe(
+        prompt=source_prompt,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale=config.guidance_scale,
+        generator=generator,
+        height=height,
+        width=width,
+    ).images[0]
+
+    generator = torch.Generator(config.device).manual_seed(config.seed)
+    control_img = pipe(
+        prompt=control_prompt,
+        num_inference_steps=config.num_inference_steps,
+        guidance_scale=config.guidance_scale,
+        generator=generator,
+        height=height,
+        width=width,
+    ).images[0]
+
+    source_img.save(s_to_c_dir / "source_image.png")
+    source_img.save(c_to_s_dir / "control_image.png")
+    control_img.save(s_to_c_dir / "control_image.png")
+    control_img.save(c_to_s_dir / "source_image.png")
+
+    results_s_to_c = {
+        "source_img": source_img,
+        "control_img": control_img,
+        "k_results": {},
+    }
+    results_c_to_s = {
+        "source_img": control_img,
+        "control_img": source_img,
+        "k_results": {},
+    }
+    use_circuit_label = config.manual_source_indices is not None
+
+    if use_circuit_label:
+        runs = [
+            {
+                "k": "manual",
+                "source_indices": config.manual_source_indices,
+                "control_indices": config.manual_control_indices or [],
+            }
+        ]
+    else:
+        src_feats, ctrl_feats = find_top_k_features(
+            pipe=pipe,
+            sae=sae,
+            source_prompt=source_prompt,
+            control_prompt=control_prompt,
+            k=max(config.k_values),
+            config=config,
+            hook_name=hook_name,
+            height=height,
+            width=width,
+        )
+
+        runs = [
+            {
+                "k": k,
+                "source_indices": src_feats[:k],
+                "control_indices": ctrl_feats[:k],
+            }
+            for k in sorted(config.k_values)
+        ]
+
+    for run in runs:
+        k, src_indices, ctrl_indices = (
+            run["k"],
+            run["source_indices"],
+            run["control_indices"],
+        )
+
+        logger.info(f"Running bidirectional patch for k={k}...")
+        s_add_vecs = extract_activations(
+            pipe,
+            sae,
+            source_prompt,
+            src_indices,
+            config,
+            hook_name,
+            height,
+            width,
+        )
+        c_add_vecs = None
+        if config.patching_mode == "add_source_subtract_control":
+            c_add_vecs = extract_activations(
+                pipe,
+                sae,
+                control_prompt,
+                ctrl_indices,
+                config,
+                hook_name,
+                height,
+                width,
+            )
+
+        # Source -> Control
+        hook_fn_s_to_c = create_patching_hook(
+            s_add_vecs, sae, config, c_add_vecs
+        )
+
+        generator = torch.Generator(config.device).manual_seed(config.seed)
+        patched_s_to_c = pipe.run_with_hooks(
+            prompt=control_prompt,
+            position_hook_dict={hook_name: hook_fn_s_to_c},
+            num_inference_steps=config.num_inference_steps,
+            guidance_scale=config.guidance_scale,
+            generator=generator,
+            height=height,
+            width=width,
+        )[0]
+
+        results_s_to_c["k_results"][k] = patched_s_to_c
+
+        # Control -> Source
+        hook_fn_c_to_s = create_patching_hook(
+            c_add_vecs if c_add_vecs else s_add_vecs, sae, config, s_add_vecs
+        )
+
+        generator = torch.Generator(config.device).manual_seed(config.seed)
+        patched_c_to_s = pipe.run_with_hooks(
+            prompt=source_prompt,
+            position_hook_dict={hook_name: hook_fn_c_to_s},
+            num_inference_steps=config.num_inference_steps,
+            guidance_scale=config.guidance_scale,
+            generator=generator,
+            height=height,
+            width=width,
+        )[0]
+
+        results_c_to_s["k_results"][k] = patched_c_to_s
+
+        k_id = "circuit" if use_circuit_label else f"{k}_features"
+        (s_to_c_dir / k_id).mkdir(exist_ok=True)
+        (c_to_s_dir / k_id).mkdir(exist_ok=True)
+        patched_s_to_c.save(s_to_c_dir / k_id / "patched_image.png")
+        patched_c_to_s.save(c_to_s_dir / k_id / "patched_image.png")
+        with open(s_to_c_dir / k_id / "details.txt", "w") as f:
+            f.write(
+                f"Source: {source_prompt}\nControl: {control_prompt}\n"
+                f"Src Feats(+): {src_indices}\n"
+                + (
+                    f"Ctrl Feats(-): {ctrl_indices}\n"
+                    if config.patching_mode == "add_source_subtract_control"
+                    else ""
+                )
+            )
+        with open(c_to_s_dir / k_id / "details.txt", "w") as f:
+            f.write(
+                f"Source: {control_prompt}\nControl: {source_prompt}\n"
+                f"Src Feats(+): {ctrl_indices}\n"
+                + (
+                    f"Ctrl Feats(-): {src_indices}\n"
+                    if config.patching_mode == "add_source_subtract_control"
+                    else ""
+                )
+            )
+
+    k_list = [r["k"] for r in runs]
+    create_paper_figure(
+        results_s_to_c,
+        k_list,
+        s_to_c_dir,
+        config.figure_dpi,
+        use_circuit_label,
+    )
+    create_paper_figure(
+        results_c_to_s,
+        k_list,
+        c_to_s_dir,
+        config.figure_dpi,
+        use_circuit_label,
+    )
+    logger.info(f"Bidirectional results saved to: {base_save_dir}")
+
+
+# =========================================================================== #
+#                        Plotting Functions                                   #
+# =========================================================================== #
 
 
 def create_paper_figure(
-    results: Dict, k_values: List[int], save_dir: Path, dpi: int = 300
+    results: Dict,
+    k_values: List[int],
+    save_dir: Path,
+    dpi: int = 300,
+    use_circuit_label: bool = False,
 ) -> None:
     """
     Create paper-ready figure with control on left, source on right,
@@ -692,48 +995,39 @@ def create_paper_figure(
         k_values (List[int]): List of k values used.
         save_dir (Path): Directory to save the figure.
         dpi (int): DPI for the figure.
+        use_circuit_label (bool): Whether to label the middle images as
+            "Circuit" instead of "{k} Features".
     """
     # Sort k values to ensure proper ordering
     sorted_k = sorted(k_values)
 
     # Create figure with appropriate size
     n_images = len(sorted_k) + 2  # +2 for control and source
-    fig_width = 3 * n_images  # 3 inches per image
-    fig, axes = plt.subplots(1, n_images, figsize=(fig_width, 3.5))
+    fig, axes = plt.subplots(1, n_images, figsize=(3 * n_images, 3.5))
 
-    # Control image on the left
     axes[0].imshow(results["control_img"])
-    axes[0].set_title("Control", fontsize=28, fontweight="bold")
+    axes[0].set_title("Destination", fontsize=28, fontweight="bold")
     axes[0].axis("off")
-
-    # K variations in the middle (lowest to highest)
     for i, k in enumerate(sorted_k, 1):
         axes[i].imshow(results["k_results"][k])
-        axes[i].set_title(f"{k} Features", fontsize=28, fontweight="bold")
+        title = "Circuit" if use_circuit_label else f"{k} Features"
+        axes[i].set_title(title, fontsize=28, fontweight="bold")
         axes[i].axis("off")
-
-    # Source image on the right
     axes[-1].imshow(results["source_img"])
     axes[-1].set_title("Source", fontsize=28, fontweight="bold")
     axes[-1].axis("off")
 
     # Adjust layout and save
     plt.tight_layout(pad=0.5)
-    plt.savefig(
-        save_dir / "paper_figure.pdf",
-        dpi=dpi,
-        bbox_inches="tight",
-        format="pdf",
-    )
-    plt.savefig(
-        save_dir / "paper_figure.png",
-        dpi=dpi,
-        bbox_inches="tight",
-        format="png",
-    )
+    for ext in ["pdf", "png"]:
+        plt.savefig(
+            save_dir / f"paper_figure.{ext}",
+            dpi=dpi,
+            bbox_inches="tight",
+            format=ext,
+        )
     plt.close()
-
-    logger.info(f"Figure saved to {save_dir / 'paper_figure.pdf'}")
+    logger.info(f"Figure saved to {save_dir / 'paper_figure.png'}")
 
 
 if __name__ == "__main__":
