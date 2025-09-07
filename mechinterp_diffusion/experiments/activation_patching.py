@@ -15,6 +15,8 @@ Example Usage:
 
 Finally, by setting `--experiment_mode bidirectional`, the above patching
 methods can be applied in both directions between a source and control prompt.
+And in case of manual feature selection, specify `--manual_source_indices` and
+`--manual_control_indices` as lists of integers.
 """
 
 # =========================================================================== #
@@ -65,6 +67,10 @@ PROMPT_PAIRS = [
         "source": "A high-resolution photo of a cat.",
         "control": "A high-resolution photo of a bird.",
     },
+    # {
+    #     "source": "A high-resolution photo of a bird.",
+    #     "control": "A high-resolution photo of a cat.",
+    # },
     {
         "source": "A high-resolution photo of a dog.",
         "control": "A high-resolution photo of a cat.",
@@ -117,7 +123,7 @@ class ActivationPatchingConfig(Serializable):
     sae_paths: List[str] = field(
         default_factory=lambda: [
             "../../checkpoints/sae/down_blocks.2.attentions.0/TopKSAE_dsae-5120_timesteps-all_20250816_083716/step_488282",  # noqa: E501
-            "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
+            # "../../checkpoints/sae/up_blocks.1.attentions.1/TopKSAE_dsae-5120_timesteps-all_20250815_224124/step_488282",  # noqa: E501
         ]
     )
     """Paths to the trained TopKSAE model directories."""
@@ -125,7 +131,7 @@ class ActivationPatchingConfig(Serializable):
     hook_names: List[str] = field(
         default_factory=lambda: [
             "unet.down_blocks.2.attentions.0",
-            "unet.up_blocks.1.attentions.1",
+            # "unet.up_blocks.1.attentions.1",
         ]
     )
     """Names of the model components to hook for activation patching."""
@@ -142,16 +148,16 @@ class ActivationPatchingConfig(Serializable):
     seed: int = 42
     """Random seed for reproducible results."""
 
-    output_dir: str = "../../results/patching_add_subtract_768"
+    output_dir: str = "../../results/bidirectional"
     """Directory to save experiment results and generated images."""
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     """Device to run computations on."""
 
-    height: int = 768
+    height: int = 512
     """Height of the generated images."""
 
-    width: int = 768
+    width: int = 512
     """Width of the generated images."""
 
     # -------------------------------------------------------------------------
@@ -174,11 +180,10 @@ class ActivationPatchingConfig(Serializable):
     - 'add_source_subtract_control': Adds top-k source features and subtracts
         top-k control features.
     - 'ablate_and_add_source': Subtracts the SAE's entire reconstruction of the
-        destination signal,
-      then adds the top-k source features.
+        destination signal, then adds the top-k source features.
     """
 
-    experiment_mode: Literal["standard", "bidirectional"] = "standard"
+    experiment_mode: Literal["standard", "bidirectional"] = "bidirectional"
     """'standard' for one-way patching, 'bidirectional' for two-way."""
 
     k_values: List[int] = field(default_factory=lambda: [1, 5, 20, 50, 200])
