@@ -2,7 +2,7 @@
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white)](https://pytorch.org/) [![Diffusers](https://img.shields.io/badge/🤗%20Diffusers-FF6F00?style=flat)](https://github.com/huggingface/diffusers) [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/) [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff) [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-A framework for understanding the internal mechanisms of text-to-image diffusion models through Sparse Autoencoders (SAEs) and automated circuit discovery. This work enables researchers to identify and analyze the specific model components responsible for generating particular visual concepts, providing interpretable insights into how diffusion models transform text into images over time.
+A framework for understanding the internal mechanisms of text-to-image diffusion models through Sparse Autoencoders (SAEs) and automated sparse feature circuit discovery. This work enables researchers to identify and analyze the specific model components responsible for generating particular visual concepts, providing interpretable insights into how diffusion models transform text into images over time.
 
 <table>
 <tr>
@@ -33,11 +33,11 @@ uv pip install -e .
 
 ## Usage Workflow
 
-The following sections describe the main workflow for using this repository. For more detailed usage, please refer to the scripts in the `scripts/` directory.
+The following sections describe the main workflow for using this repository. For more detailed usage, please refer to the scripts in the `scripts/` directory as well as to the docstrings in the beginning of the python scripts.
 
 ### 1. Prepare Prompt Datasets
 
-Before you can extract activations or train models, you need to prepare the prompt datasets. This is done using the `prepare_prompt_datasets.py` script.
+Before we can extract activations or train models, we need to prepare the prompt datasets. This is done using the `prepare_prompt_datasets.py` script.
 
 ```bash
 cd mechinterp_diffusion/scripts
@@ -70,14 +70,14 @@ This script trains SAEs on the cached activations for different layers of the di
 
 ### 4. Feature Interventions
 
-Test the causal importance of learned features through targeted interventions in the diffusion process. The `intervene_sae.sh` script provides a comprehensive set of experiments.
+Test the causal influence of learned features on the final image through targeted interventions in the diffusion process. The `intervene_sae.sh` script provides a comprehensive set of experiments.
 
 ```bash
 cd scripts
 ./intervene_sae.sh
 ```
 
-This script runs a variety of intervention experiments, including trajectory analysis, grid searches over intervention strengths, and knockout experiments. The results are saved in the `results/` directory.
+This script runs a variety of intervention experiments, including trajectory analysis and grid searches over intervention strengths.
 
 ### 5. Circuit Discovery
 
@@ -94,7 +94,7 @@ python prepare_circuit_prompt_dataset.py
 
 #### 5b. Extract Activations for Probing
 
-Next, extract the latent activations for the prompt dataset you just created.
+Next, extract the latent activations for the prompt dataset we just created.
 
 ```bash
 cd scripts
@@ -105,7 +105,7 @@ This script collects latent activations for the binary classification task.
 
 #### 5c. Train Probe
 
-Train a probe to identify the spatial regions in the latent space that are relevant for the concept.
+Train a latent probe whose logit differences are used to identify influential nodes for birds vs cats generation:
 
 ```bash
 cd mechinterp_diffusion/circuit_discovery
@@ -134,53 +134,48 @@ cd scripts
 ./activation_patching.sh
 ```
 
-This script runs a series of activation patching experiments with different settings, providing a quantitative and qualitative validation of the discovered circuits.
+This script runs a series of activation patching experiments, providing a qualitative validation of the discovered circuits.
 
 ## Repository Structure
 
 ```
 mechinterp-diffusion/
 ├── mechinterp_diffusion/
-│   ├── __init__.py                         # Package initializer
-│   ├── config.py                           # Centralized configuration dataclasses
-│   ├── core/                               # Core framework components
-│   │   ├── diffusion/                      # Diffusion model interfaces
-│   │   │   ├── __init__.py                 # Package initializer
-│   │   │   ├── hooked_sd_pipeline.py           # Stable Diffusion with activation hooks
-│   │   │   └── hooked_scheduler.py             # Scheduler with caching support
-│   │   ├── sae/                            # Sparse Autoencoder implementations
-│   │   │   ├── __init__.py                 # Package initializer
+│   ├── __init__.py                         
+│   ├── config.py                           # Centralized configuration dataclasses for training and intervention
+│   ├── core/                               
+│   │   ├── diffusion/                      
+│   │   │   ├── hooked_sd_pipeline.py       # Stable Diffusion with activation hooks
+│   │   │   └── hooked_scheduler.py         # Scheduler with caching support
+│   │   ├── sae/                            
 │   │   │   ├── base_sae.py                 # Abstract SAE base class
 │   │   │   ├── topk_sae.py                 # TopK and Batch-TopK SAE variants
 │   │   │   ├── trainer.py                  # SAE training loop and optimization
-│   │   │   └── metrics.py                  # Evaluation metrics (MSE, sparsity, etc.)
-│   │   └── utils/                          # Shared utilities
-│   │       ├── __init__.py                 # Package initializer
-│   │       ├── hooks.py                    # Hook management for activation extraction
-│   │       ├── activations_iterator.py         # Efficient activation data loading
+│   │   │   └── metrics.py                  # Evaluation metrics (MSE, R2, etc.)
+│   │   └── utils/                          
+│   │       ├── hooks.py                    # Hook management for interventions
+│   │       ├── activations_iterator.py     # Activation loaders with buffer for SAE training
 │   │       ├── analysis_utils.py           # Utilities for analysis and plotting
 │   │       └── reproducibility.py          # Seed and determinism utilities
-│   ├── scripts/                            # Long-running data processing scripts
+│   ├── scripts/                            
 │   │   ├── collect_latents.py              # Extract and cache model activations
 │   │   ├── train_sae.py                    # Train SAEs on cached activations
 │   │   ├── prepare_prompt_datasets.py          # Dataset preparation utilities
 │   │   ├── collect_top_dataset_examples.py     # Extract and visualize top examples for each SAE feature
 │   │   └── prepare_circuit_prompt_dataset.py   # Create prompt dataset for sparse feature circuit discovery
-│   ├── experiments/                        # Analysis and evaluation experiments
-│   │   ├── activation_patching.py          # Feature patching between images
+│   ├── experiments/                       
+│   │   ├── activation_patching.py          # Activation patching between prompt runs
 │   │   ├── evaluate_sae.py                 # SAE reconstruction metrics
-│   │   ├── intervene_sae.py                # Causal feature interventions
+│   │   ├── intervene_sae.py                # Various feature interventions
 │   │   ├── visualize_sae_spatial.py        # Spatial feature visualizations
 │   │   ├── ablate_sae.py                   # Ablation study framework for SAEs
-│   │   ├── analyze_feature_activity.py     # Analyze SAE feature activity
+│   │   ├── analyze_feature_activity.py     # Analyze SAE feature activity over time
 │   │   └── visualize_sae_ablation_results.py # Visualize SAE ablation results
-│   ├── circuit_discovery/                  # Automated circuit finding
-│   │   ├── __init__.py                     # Package initializer
+│   ├── circuit_discovery/                  
 │   │   ├── discover_circuits.py            # Main circuit discovery pipeline
-│   │   ├── train_probe.py                  # Train concept probes for guidance
-│   │   ├── temporal_attribution.py         # Cross-timestep gradient flow
-│   │   ├── circuit_utils.py                # Graph operations and minimization
-│   │   ├── evaluate_circuit.py             # Circuit validation metrics
+│   │   ├── train_probe.py                  # Train concept probes that serves as metric
+│   │   ├── temporal_attribution.py         # Attribution patching and edge weight calculation
+│   │   ├── circuit_utils.py                # Utility functions for attribution patching
 │   │   ├── activation_utils.py             # Helper class for sparse feature activations
 │   │   ├── circuit_plotting.py             # Plotting functions for causal circuits
 │   │   ├── coo_utils.py                    # Utilities for handling sparse COO tensors
@@ -188,36 +183,21 @@ mechinterp-diffusion/
 │   │   ├── probe.py                        # Defines a CNN probe for latent representations
 │   │   └── circuit_discovery_datasets.py   # Create comparative and single-object prompt datasets
 │   └── ablation_configs/                   # Hydra configs for hyperparameter sweeps
-├── scripts/                                # Shell scripts for common workflows
+├── scripts/                                
 │   ├── train_sae.sh                        # SAE training with default settings
-│   ├── discover_circuits.sh                # End-to-end circuit discovery
-│   ├── activation_patching.sh              # Batch patching experiments
-│   ├── collect_latents.sh                  # Collect latent representations
+│   ├── discover_circuits.sh                # Main circuit discovery pipeline
+│   ├── activation_patching.sh              # Activation patching experiments
+│   ├── collect_latents.sh                  # Collect latent representations for SAE training
 │   ├── collect_latents_for_probe.sh        # Collect latents for probe training
 │   ├── collect_top_examples.sh             # Collect top activating examples for SAE features
 │   ├── evaluate_sae.sh                     # Evaluate SAE performance
 │   ├── intervene_sae.sh                    # Run SAE intervention experiments
 │   └── run_ablations.sh                    # Run SAE ablation studies
-├── notebooks/                              # Jupyter notebooks for exploration
+├── notebooks/                             
 │   ├── diffusers_model_comparison.ipynb    # Compares image synthesis of different diffusion models
 │   └── sae_evaluation.ipynb                # Creates tables summarizing the results from `scripts/evaluate_sae.sh`
 ```
 
-## Scripts
-
-The `scripts/` directory contains shell scripts that automate the main workflows of this repository.
-
-| Script | Description |
-| --- | --- |
-| `activation_patching.sh` | Runs activation patching experiments with different resolutions and timesteps. |
-| `collect_latents.sh` | Collects latent representations from the diffusion model for both train and test splits. |
-| `collect_latents_for_probe.sh` | Collects latent representations for training a probe. |
-| `collect_top_examples.sh` | Collects and saves the top activating examples for SAE features. |
-| `discover_circuits.sh` | Runs the circuit discovery pipeline. |
-| `evaluate_sae.sh` | Runs SAE evaluation with different configurations. |
-| `intervene_sae.sh` | Runs SAE intervention experiments with various modes and parameters. |
-| `run_ablations.sh` | Runs a series of SAE ablation studies and visualizes the results. |
-| `train_sae.sh` | Trains SAEs on different activation datasets. |
 
 ## License
 
