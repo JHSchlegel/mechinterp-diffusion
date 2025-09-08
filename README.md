@@ -39,7 +39,7 @@ uv pip install -e .
 
 ## Usage Workflow
 
-The following sections describe the main workflow for using this repository. For more detailed usage, please refer to the scripts in the `scripts/` directory as well as to the docstrings in the beginning of the python scripts.
+The following sections describe the main workflow for using this repository. For more detailed usage, please refer to the scripts in the `scripts/` directory and to the docstrings at the beginning of the Python scripts.
 
 ### 1. Prepare Prompt Datasets
 
