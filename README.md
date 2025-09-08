@@ -28,6 +28,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Clone and install
 git clone https://github.com/jhschlegel/mechinterp-diffusion.git
 cd mechinterp-diffusion
+
+# Create a virtual environment for this project
+uv venv
+source .venv/bin/activate
+
+# Install the project package
 uv pip install -e .
 ```
 
