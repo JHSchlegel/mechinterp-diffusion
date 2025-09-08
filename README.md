@@ -50,7 +50,7 @@ cd mechinterp_diffusion/scripts
 python prepare_prompt_datasets.py
 ```
 
-This will create the necessary datasets for the following steps. For circuit discovery, a specific dataset is needed, which can be created with `prepare_circuit_prompt_dataset.py`.
+This will create the necessary datasets for the following steps. For circuit discovery, a specific dataset is needed, which can be created with `mechinterp_diffusion/scripts/prepare_circuit_prompt_dataset.py`.
 
 ### 2. Activation Extraction
 
